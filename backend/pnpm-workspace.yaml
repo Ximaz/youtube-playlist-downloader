@@ -1,0 +1,4 @@
+onlyBuiltDependencies:
+  - esbuild
+  - ffmpeg-static
+  - unrs-resolver
