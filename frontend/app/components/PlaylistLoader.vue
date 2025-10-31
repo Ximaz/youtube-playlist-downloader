@@ -22,10 +22,10 @@
     </div>
 
     <VideoExportStatus
-      v-for="videoId in playlistMetadata.videoIds"
-      :key="videoId"
+      v-for="video in playlistMetadata.videos"
+      :key="video.id"
       ref="videos"
-      :video-id="videoId"
+      :video="video"
       :steps="exportSteps"
       :force-refresh="forceRefresh"
       @progress="updateTotalProgressBar"
@@ -116,7 +116,7 @@ async function downloadExport(
   url.searchParams.append("convert", convert.toString());
   url.searchParams.append(
     "videoIds",
-    playlistMetadata.value!.videoIds.join(","),
+    playlistMetadata.value!.videos.map((video) => video.id).join(","),
   );
 
   const a = document.createElement("a");
@@ -153,7 +153,7 @@ async function exportVideos({
     },
     method: "POST",
     body: {
-      videoIds: playlistMetadata.value?.videoIds,
+      videoIds: playlistMetadata.value?.videos.map((video) => video.id),
       audio,
       video,
       convert,
@@ -206,7 +206,7 @@ async function exportVideos({
       case "CLOSE":
         ++closeCount;
 
-        if (closeCount === playlistMetadata.value!.videoIds.length)
+        if (closeCount === playlistMetadata.value!.videos.length)
           await downloadExport(playlistMetadata.value?.title ?? "playlist", {
             audio,
             video,

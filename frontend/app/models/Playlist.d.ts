@@ -1,6 +1,6 @@
 declare interface RefinedPlaylistMetadata {
   playlistId: string;
   title: string;
-  videoIds: string[];
+  videos: { title: string; author: string; id: string; thumbnail: string }[];
   thumbnailUrl: string;
 }

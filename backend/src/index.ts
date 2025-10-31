@@ -4,9 +4,9 @@ import { logger as loggerHook } from "hono/logger";
 import { HTTPException } from "hono/http-exception";
 import { serve } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
-import { PORT } from "@/env.js";
-import videosRouter, { injectWebSocketUpgrade } from "@/controllers/videos.js";
-import LoggerService from "@/services/LoggerService.js";
+import videosRouter, { injectWebSocketUpgrade } from "@/api/videos.js";
+import LoggerService from "@/infrastructure/logger/LoggerService.js";
+import { PORT } from "@/infrastructure/config/env.js";
 
 const app = new Hono();
 
