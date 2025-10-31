@@ -1,3 +1,5 @@
+import { redisClient } from "@/infrastructure/config/env.js";
+
 /**
  * This RegExp is executed against the HTML content of a Youtube video page in
  * order to detect and extract the related metadata. It checks for an optional
@@ -36,6 +38,15 @@ function parseDate(date: Date) {
 export async function getVideoMetadata(
   videoId: string,
 ): Promise<RefinedVideoMetadata> {
+  if (!redisClient.isOpen) {
+    await redisClient.connect();
+  }
+  const cachedVideo = await redisClient.get(videoId);
+
+  if (null !== cachedVideo) {
+    return JSON.parse(cachedVideo) as RefinedVideoMetadata;
+  }
+
   const url = new URL(`https://www.youtube.com/watch?v=${videoId}`);
 
   const response = await fetch(url, {

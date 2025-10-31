@@ -162,8 +162,6 @@ export default class YoutubeDownloaderService {
   ) {
     const innertube = await Innertube.create({
       cache: new UniversalCache(true),
-      enable_session_cache: true,
-      retrieve_player: true,
     });
     const webPoTokenResult = await YoutubeDownloaderService.generateWebPoToken(
       innertube.session.context.client.visitorData || "",

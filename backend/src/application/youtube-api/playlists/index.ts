@@ -1,5 +1,6 @@
 import Innertube, { UniversalCache } from "youtubei.js";
 import YoutubeAPI from "../index.js";
+import { redisClient } from "@/infrastructure/config/env.js";
 
 const PLAYLIST_METADATA_REGEX =
   /<script[^>]+>var ytInitialData = (\{.+\});<\/script>/;
@@ -22,7 +23,7 @@ async function getPlaylistVideos(
     }[] = [];
     while (playlistPage.videos.length > 0) {
       // Type PlaylistVideo is not exported, so we have to use a cast here.
-
+      console.log(JSON.stringify(playlistPage.videos));
       videoIds.push(
         ...(
           playlistPage.videos.filter(
@@ -91,13 +92,25 @@ async function getPlaylistMetadata(
       `Unable to find the playlist details. Make sure the playlist visibility is at least 'unlisted'. (${playlistId})`,
     );
 
+  const videos = await YoutubeAPI.PlaylistAPI.getPlaylistVideos(playlistId);
+
+  await Promise.all(
+    videos.map(
+      async (video) =>
+        await redisClient.set(video.id, JSON.stringify(video), {
+          expiration: { type: "EX", value: Date.now() + 60 * 60 * 1000 },
+          GET: true,
+        }),
+    ),
+  );
+
   return {
     playlistId,
     title: playlistMetadata.metadata.playlistMetadataRenderer.title,
     thumbnailUrl: getBestThumbnailUrl(
       playlistMetadata.microformat.microformatDataRenderer.thumbnail.thumbnails,
     ),
-    videos: await YoutubeAPI.PlaylistAPI.getPlaylistVideos(playlistId),
+    videos,
   };
 }
 

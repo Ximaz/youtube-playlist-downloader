@@ -46,7 +46,7 @@ services:
       - S3_API_SECRET_ACCESS_KEY=minioadmin
       - REDIS_HOST=ypd-redis
       - REDIS_PORT=6379
-      - WORKERS_CAPACITY=3
+      - WORKERS_CAPACITY=1
     restart: unless-stopped
 
   ypd-frontend:
