@@ -25,7 +25,7 @@ bun install
 
 ### Video
 
-To download a single Youtube video, you can use the following command :
+To download a single Youtube video, use the following command :
 
 ```bash
 bun cmd:video --video-id <video-id> --output-folder ./video-streams
@@ -33,9 +33,15 @@ bun cmd:video --video-id <video-id> --output-folder ./video-streams
 
 This will download both the audio and video streams, in separate files.
 
+If you want to build a compiled binary instead, use this instead :
+```bash
+bun build:cmd:video
+./bin/youtube-video-downloader --video-id <video-id> \
+    --output-folder ./video-streams
+```
 ### Videos
 
-To download a list of Youtube videos, you can use the following command :
+To download a list of Youtube videos, use the following command :
 
 ```bash
 bun cmd:videos --output-folder ./videos \
@@ -47,9 +53,17 @@ bun cmd:videos --output-folder ./videos \
 This will download all video streams in the same folder. Both audio and video
 streams are still stored in separate files, but in the same folder overall.
 
+If you want to build a compiled binary instead, use this instead :
+```bash
+bun build:cmd:videos
+./bin/youtube-videos-downloader --output-folder ./videos \
+    --video-id <video-id-1> \
+    --video-id <video-id-2> \
+    --video-id <video-id-3>
+```
 ### Playlist
 
-To download a whole Youtube playlist, you can use the following command :
+To download a whole Youtube playlist, use the following command :
 
 ```bash
 bun cmd:playlist --playlist-id <playlist-id> --output-folder ./playlist
@@ -57,6 +71,22 @@ bun cmd:playlist --playlist-id <playlist-id> --output-folder ./playlist
 
 This will download all video streams in the same folder. Both audio and video
 streams are still stored in separate files, but in the same folder overall.
+
+If you want to build a compiled binary instead, use this instead :
+```bash
+bun build:cmd:playlist
+./bin/youtube-playlist-downloader --playlist-id <playlist-id> \
+    --output-folder ./playlist
+```
+
+### Build all binaries
+
+If you want to build all the binaries directly, use the following command :
+```bash
+bun build:cli
+```
+
+All binaries will be output to the `bin` folder.
 
 ## Web UI
 

@@ -3,6 +3,10 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "build:cli": "bun build:cli:video && bun build:cli:videos && bun build:cli:playlist",
+    "build:cli:video": "bun build ./cmd/youtube-video-downloader.ts --compile --outfile bin/youtube-video-downloader",
+    "build:cli:videos": "bun build ./cmd/youtube-videos-downloader.ts --compile --outfile bin/youtube-videos-downloader",
+    "build:cli:playlist": "bun build ./cmd/youtube-playlist-downloader.ts --compile --outfile bin/youtube-playlist-downloader",
     "cli:video": "bun ./cmd/youtube-video-downloader.ts",
     "cli:videos": "bun ./cmd/youtube-videos-downloader.ts",
     "cli:playlist": "bun ./cmd/youtube-playlist-downloader.ts",
