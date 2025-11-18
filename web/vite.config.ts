@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import build from "@hono/vite-build/bun";
 import devServer from "@hono/vite-dev-server";
+import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig(({ mode }) => {
   if (mode === "client")
@@ -26,6 +27,7 @@ export default defineConfig(({ mode }) => {
       devServer({
         entry: "src/index.tsx",
       }),
+      tailwindcss()
     ],
   };
 });
