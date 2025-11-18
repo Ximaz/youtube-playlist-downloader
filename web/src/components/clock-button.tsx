@@ -1,8 +1,7 @@
 import { useState } from "hono/jsx";
-import type { AppType } from "..";
-import type { hc } from "hono/client";
+import type { ClientType } from "../client";
 
-export const ClockButton = ({ client } : { client: ReturnType<typeof hc<AppType>>}) => {
+export const ClockButton = ({ client }: { client: ClientType }) => {
   const [response, setResponse] = useState<string | null>(null);
 
   const handleClick = async () => {
