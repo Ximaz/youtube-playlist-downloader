@@ -1,6 +1,7 @@
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
 import { parentPort, workerData } from "node:worker_threads";
 import { mergeToWEBM, mergeToMPEG } from "@internal/convertor/merge-convertor";
 import audioConvertor from "@internal/convertor/audio-convertor";
@@ -14,7 +15,6 @@ import type { VideosDownloadDto } from "@web/api/videos/dto/videos-download.dto"
 import CommunicationService, {
   CommunicationServiceClientWorker,
 } from "@web/infrastructure/communication/communication.service";
-import { createReadStream } from "node:fs";
 
 const { videoIds, audio, video, convert } = workerData as VideosDownloadDto;
 
@@ -25,7 +25,7 @@ const communicationService = new CommunicationService(
 async function startTask() {
   const videoId = videoIds[0]!;
 
-  const outputPath = await mkdtemp(`/tmp/ypd-${videoId}`);
+  const outputPath = await mkdtemp(path.join(tmpdir(), `ypd-${videoId}`));
   const downloader = await YoutubeVideoDownloader(videoId, outputPath);
 
   const start = Date.now();
