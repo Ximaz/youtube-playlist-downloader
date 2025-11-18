@@ -1,4 +1,5 @@
 import { getBestThumbnailUrl } from "@internal/youtube-api/thumbnail";
+import type { RefinedVideoMetadata, VideoMetadata } from "./video-typings";
 
 /**
  * This RegExp is executed against the HTML content of a Youtube video page in
@@ -52,15 +53,15 @@ export default async function getVideoMetadata(
     videoId,
     title: videoMetadata.videoDetails.title,
     author: videoMetadata.videoDetails.author.replace(/[^\x20-\x7E]+/gi, "_"),
-    thumbnailUrl:
-      getBestThumbnailUrl(videoMetadata.videoDetails.thumbnail.thumbnails) ??
-      "#",
-    date: parseDate(
-      new Date(videoMetadata.microformat.playerMicroformatRenderer.publishDate),
+    thumbnailUrl: getBestThumbnailUrl(
+      videoMetadata.videoDetails.thumbnail.thumbnails,
     ),
-    description: (
-      videoMetadata.microformat.playerMicroformatRenderer.description
-        ?.simpleText ?? videoMetadata.videoDetails.shortDescription
-    ).replace(/[^\x20-\x7E]+/gi, "_"),
+    // date: parseDate(
+    //   new Date(videoMetadata.microformat.playerMicroformatRenderer.publishDate),
+    // ),
+    // description: (
+    //   videoMetadata.microformat.playerMicroformatRenderer.description
+    //     ?.simpleText ?? videoMetadata.videoDetails.shortDescription
+    // ).replace(/[^\x20-\x7E]+/gi, "_"),
   };
 }

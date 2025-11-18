@@ -1,11 +1,13 @@
-declare interface RefinedPlaylistMetadata {
+import type { RefinedVideoMetadata } from "./video-typings";
+
+export interface RefinedPlaylistMetadata {
   playlistId: string;
   title: string;
-  videos: { id: string; author: string; thumbnail: string; title: string }[];
+  videos: RefinedVideoMetadata[];
   thumbnailUrl: string;
 }
 
-declare interface PlaylistMetadata {
+export interface PlaylistMetadata {
   responseContext: ResponseContext;
   contents: Contents;
   header: Header;

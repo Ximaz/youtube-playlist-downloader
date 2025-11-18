@@ -1,0 +1,74 @@
+services:
+  ypd-minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1
+    container_name: ypd-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - ypd-network
+    volumes:
+      - ypd-minio-volume:/data:rw
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+
+  ypd-redis:
+    image: redis:8.2.1-bookworm
+    container_name: ypd-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - ypd-network
+    volumes:
+      - ypd-redis-volume:/data:rw
+    restart: unless-stopped
+
+  ypd-backend:
+    depends_on:
+      - ypd-minio
+      - ypd-redis
+    image: ypd-backend
+    build:
+      context: backend/
+      dockerfile: Dockerfile
+    container_name: ypd-backend
+    ports:
+      - "8080:3000"
+    networks:
+      - ypd-network
+    environment:
+      - S3_API_REGION=eu-west-1
+      - S3_API_ENDPOINT=http://ypd-minio:9000
+      - S3_API_ACCESS_KEY_ID=minioadmin
+      - S3_API_SECRET_ACCESS_KEY=minioadmin
+      - REDIS_HOST=ypd-redis
+      - REDIS_PORT=6379
+      - WORKERS_CAPACITY=1
+    restart: unless-stopped
+
+  ypd-frontend:
+    depends_on:
+      - ypd-backend
+    image: ypd-frontend
+    build:
+      context: frontend/
+      dockerfile: Dockerfile
+    container_name: ypd-frontend
+    ports:
+      - 8081:3001
+    networks:
+      - ypd-network
+    environment:
+      - PORT=3001
+      - BACKEND_API=http://ypd-backend:3000
+    restart: unless-stopped
+
+volumes:
+  ypd-minio-volume:
+  ypd-redis-volume:
+
+networks:
+  ypd-network:

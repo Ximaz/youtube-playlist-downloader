@@ -1,11 +1,11 @@
-declare interface RefinedVideoMetadata extends Record<string, string> {
+export interface RefinedVideoMetadata extends Record<string, string> {
   videoId: string;
   author: string;
   title: string;
   thumbnailUrl: string;
 }
 
-declare interface VideoMetadata {
+export interface VideoMetadata {
   responseContext: ResponseContext;
   playabilityStatus: PlayabilityStatus;
   streamingData: StreamingData;

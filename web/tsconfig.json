@@ -1,16 +1,7 @@
 {
   "extends": "../tsconfig.json",
   "compilerOptions": {
-    "target": "ESNext",
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
     "strict": true,
-    "esModuleInterop": true,
-    "lib": ["ESNext", "DOM", "DOM.Iterable"],
-    "types": ["vite/client", "bun-types"],
-    "jsx": "react-jsx",
-    "jsxImportSource": "hono/jsx",
-
     "baseUrl": "./",
     "paths": {
       "@internal/*": ["../internal/*"],

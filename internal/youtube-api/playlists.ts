@@ -1,5 +1,9 @@
 import Innertube, { UniversalCache } from "youtubei.js";
 import { getBestThumbnailUrl } from "@internal/youtube-api/thumbnail";
+import type {
+  PlaylistMetadata,
+  RefinedPlaylistMetadata,
+} from "./playlist-typings";
 
 const PLAYLIST_METADATA_REGEX =
   /<script[^>]+>var ytInitialData = (\{.+\});<\/script>/;
@@ -32,8 +36,8 @@ export async function getPlaylistVideos(
           }[]
         ).map((video) => ({
           id: video.id,
-          title: video.title.text,
-          author: video.author.name,
+          title: video.title.text.replace(/[^\x20-\x7E]+/gi, "_"),
+          author: video.author.name.replace(/[^\x20-\x7E]+/gi, "_"),
           thumbnail: getBestThumbnailUrl(video.thumbnails),
         })),
       );
@@ -92,10 +96,18 @@ export default async function getPlaylistMetadata(
 
   return {
     playlistId,
-    title: playlistMetadata.metadata.playlistMetadataRenderer.title,
+    title: playlistMetadata.metadata.playlistMetadataRenderer.title.replace(
+      /[^\x20-\x7E]+/gi,
+      "_",
+    ),
     thumbnailUrl: getBestThumbnailUrl(
       playlistMetadata.microformat.microformatDataRenderer.thumbnail.thumbnails,
     ),
-    videos,
+    videos: videos.map((video) => ({
+      videoId: video.id,
+      title: video.title,
+      author: video.author,
+      thumbnailUrl: video.thumbnail,
+    })),
   };
 }
