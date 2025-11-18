@@ -3,9 +3,11 @@ import { upgradeWebSocket, websocket } from "hono/bun";
 import { HTTPException } from "hono/http-exception";
 import videosRouter, { injectWebSocketUpgrade } from "@web/api/videos/videos";
 import playlistsRouter from "@web/api/playlists/playlists";
-import { PORT } from "@web/infrastructure/config/env";
+import { PORT, redisClient } from "@web/infrastructure/config/env";
 
 const app = new Hono();
+
+await redisClient.connect();
 
 const videosWebsocketRouter = injectWebSocketUpgrade(
   videosRouter,
@@ -30,6 +32,7 @@ app.onError((err) => {
 });
 
 app.route("/videos", videosWebsocketRouter);
+
 app.route("/playlists", playlistsRouter);
 
 export default {

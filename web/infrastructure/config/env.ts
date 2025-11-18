@@ -20,4 +20,4 @@ export const redisClient = createClient({
     host: process.env["REDIS_HOST"] as string,
     port: parseInt(process.env["REDIS_PORT"] ?? "NaN", 10) || 6379,
   },
-});
+}).on("error", console.error);

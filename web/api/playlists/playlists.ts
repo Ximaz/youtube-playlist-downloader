@@ -8,8 +8,7 @@ const router = new Hono();
 router.get("/:id", async (c) => {
   const { id } = c.req.param();
 
-  const client = await redisClient.on("error", console.error).connect();
-  const cache = new CacheRedis(900, client);
+  const cache = new CacheRedis(900, redisClient);
 
   const forceRefresh = undefined !== c.req.header("X-Force-Refresh");
   const cachedVideoMetadata = await cache.getPlaylistMetadata(id, forceRefresh);
