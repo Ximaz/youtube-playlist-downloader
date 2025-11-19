@@ -218,11 +218,14 @@ parentPort?.on("message", (message) => {
         `Time to complete: ${(timeToComplete / 1000).toFixed(1)} seconds`,
       );
       communicationService.sendClose();
-      parentPort?.close();
     })
     .catch((err: unknown) => {
       console.error(err);
       communicationService.sendError(err as Error);
+    })
+    .finally(() => {
       parentPort?.close();
+      parentPort?.close();
+      process.exit(0);
     });
 });
