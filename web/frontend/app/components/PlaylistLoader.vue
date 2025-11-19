@@ -21,16 +21,18 @@
       </div>
     </div>
 
-    <VideoExportStatus
-      v-for="video in playlistMetadata.videos"
-      :key="video.videoId"
-      ref="videos"
-      :video="video"
-      :steps="exportSteps"
-      :force-refresh="forceRefresh"
-      @progress="updateTotalProgressBar"
-      @error="(e) => showError(e.name, e.message)"
-    />
+    <div v-if="exportSteps.length > 0">
+      <VideoExportStatus
+        v-for="video in playlistMetadata.videos"
+        :key="video.videoId"
+        ref="videos"
+        :video="video"
+        :steps="exportSteps"
+        :force-refresh="forceRefresh"
+        @progress="updateTotalProgressBar"
+        @error="(e) => showError(e.name, e.message)"
+      />
+    </div>
   </div>
   <ErrorModal
     :title="errorTitle"
@@ -82,7 +84,7 @@ async function getPlaylistMetadata(playlistId: string, forceRefresh: boolean) {
       onResponseError(context) {
         throw new Error(context.error?.message ?? "Unknown error occured");
       },
-    },
+    }
   );
 
   return response.data!;
@@ -91,7 +93,7 @@ async function getPlaylistMetadata(playlistId: string, forceRefresh: boolean) {
 function updateTotalProgressBar() {
   const current = videos.value.reduce(
     (acc, { progress }) => acc + progress / 100,
-    compressionProgress.value,
+    compressionProgress.value
   );
   const total = videos.value.length + 1;
 
@@ -108,7 +110,7 @@ async function downloadExport(
     audio: boolean;
     video: boolean;
     convert: boolean;
-  },
+  }
 ) {
   const url = new URL("/api/videos/export", new URL(import.meta.url).origin);
   url.searchParams.append("audio", audio.toString());
@@ -116,7 +118,7 @@ async function downloadExport(
   url.searchParams.append("convert", convert.toString());
   url.searchParams.append(
     "videoIds",
-    playlistMetadata.value!.videos.map((video) => video.videoId).join(","),
+    playlistMetadata.value!.videos.map((video) => video.videoId).join(",")
   );
 
   const a = document.createElement("a");
@@ -137,10 +139,10 @@ async function exportVideos({
   convert: boolean;
   forceRefresh: boolean;
 }) {
-  exportStarted.value = true;
-
   exportSteps.value = ["DOWNLOAD"];
   if (convert || (audio && video)) exportSteps.value.push("CONVERT");
+
+  exportStarted.value = true;
 
   const response: GenericAPIResponse<{
     cachedVideos: string[];

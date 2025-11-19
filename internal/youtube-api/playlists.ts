@@ -4,12 +4,13 @@ import type {
   PlaylistMetadata,
   RefinedPlaylistMetadata,
 } from "./playlist-typings";
+import path from "node:path";
 
 const PLAYLIST_METADATA_REGEX =
   /<script[^>]+>var ytInitialData = (\{.+\});<\/script>/;
 
 export async function getPlaylistVideos(
-  playlistId: string,
+  playlistId: string
 ): Promise<{ id: string; title: string; author: string; thumbnail: string }[]> {
   const innertube = await Innertube.create({
     cache: new UniversalCache(true),
@@ -27,7 +28,7 @@ export async function getPlaylistVideos(
       videoIds.push(
         ...(
           playlistPage.videos.filter(
-            (video) => video.type === "PlaylistVideo",
+            (video) => video.type === "PlaylistVideo"
           ) as unknown as {
             id: string;
             title: { text: string };
@@ -39,7 +40,7 @@ export async function getPlaylistVideos(
           title: video.title.text.replace(/[^\x20-\x7E]+/gi, "_"),
           author: video.author.name.replace(/[^\x20-\x7E]+/gi, "_"),
           thumbnail: getBestThumbnailUrl(video.thumbnails),
-        })),
+        }))
       );
       if (!playlistPage.has_continuation) return videoIds;
       playlistPage = await playlistPage.getContinuation();
@@ -47,7 +48,7 @@ export async function getPlaylistVideos(
     return [];
   } catch {
     throw new Error(
-      `Unable to access the playlist ${playlistId}. Make sure it is either Public or Unlisted.`,
+      `Unable to access the playlist ${playlistId}. Make sure it is either Public or Unlisted.`
     );
   }
 }
@@ -60,7 +61,7 @@ class PlaylistNotFoundError extends Error {
 }
 
 export default async function getPlaylistMetadata(
-  playlistId: string,
+  playlistId: string
 ): Promise<RefinedPlaylistMetadata> {
   const url = new URL(`https://www.youtube.com/playlist?list=${playlistId}`);
 
@@ -96,12 +97,9 @@ export default async function getPlaylistMetadata(
 
   return {
     playlistId,
-    title: playlistMetadata.metadata.playlistMetadataRenderer.title.replace(
-      /[^\x20-\x7E]+/gi,
-      "_",
-    ),
+    title: playlistMetadata.metadata.playlistMetadataRenderer.title,
     thumbnailUrl: getBestThumbnailUrl(
-      playlistMetadata.microformat.microformatDataRenderer.thumbnail.thumbnails,
+      playlistMetadata.microformat.microformatDataRenderer.thumbnail.thumbnails
     ),
     videos: videos.map((video) => ({
       videoId: video.id,

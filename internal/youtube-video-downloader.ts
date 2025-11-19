@@ -17,7 +17,7 @@ import {
 
 Platform.shim.eval = async (
   data: Types.BuildScriptResult,
-  env: Record<string, Types.VMPrimative>,
+  env: Record<string, Types.VMPrimative>
 ) => {
   const properties = [];
 
@@ -48,7 +48,7 @@ class OutputFileFactory {
   create(
     title: string,
     mimeType: string,
-    outputFolder: string,
+    outputFolder: string
   ): { stream: WriteStream; filePath: string } {
     const type = mimeType.includes("video") ? "video" : "audio";
     const sanitized = title?.replace(/[^\x20-\x7E]+/gi, "_") || "unknown";
@@ -70,7 +70,7 @@ class StreamSinkFactory {
     format: SabrFormat,
     out: WriteStream,
     onProgress?: ProgressCallback,
-    type?: "audio" | "video",
+    type?: "audio" | "video"
   ) {
     let size = 0;
     let lastEmit = 101;
@@ -96,7 +96,7 @@ class StreamSinkFactory {
         }
 
         return new Promise((resolve, reject) =>
-          out.write(chunk, (err) => (err ? reject(err) : resolve())),
+          out.write(chunk, (err) => (err ? reject(err) : resolve()))
         );
       },
       close() {
@@ -111,7 +111,7 @@ class PlayerRequestService {
 
   async fetch(
     videoId: string,
-    reload?: ReloadPlaybackContext,
+    reload?: ReloadPlaybackContext
   ): Promise<IPlayerResponse> {
     const endpoint = new YTNodes.NavigationEndpoint({
       watchEndpoint: { videoId },
@@ -185,7 +185,7 @@ class SabrStreamFactory {
   constructor(
     private readonly innertube: Innertube,
     private readonly player: PlayerRequestService,
-    private readonly webPo: WebPoTokenService,
+    private readonly webPo: WebPoTokenService
   ) {}
 
   async create(videoId: string, opts: SabrPlaybackOptions) {
@@ -195,7 +195,7 @@ class SabrStreamFactory {
     const title = response.video_details?.title || "Unknown Video";
 
     const serverUrl = await this.innertube.session.player?.decipher(
-      response.streaming_data?.server_abr_streaming_url,
+      response.streaming_data?.server_abr_streaming_url
     );
     const cfg =
       response.player_config?.media_common_config.media_ustreamer_request_config
@@ -216,7 +216,7 @@ class SabrStreamFactory {
           Constants.CLIENT_NAME_IDS[
             this.innertube.session.context.client
               .clientName as keyof typeof Constants.CLIENT_NAME_IDS
-          ],
+          ]
         ),
         clientVersion: this.innertube.session.context.client.clientVersion,
       },
@@ -226,7 +226,7 @@ class SabrStreamFactory {
       const refreshed = await this.player.fetch(videoId, reloadCtx);
 
       const newUrl = await this.innertube.session.player?.decipher(
-        refreshed.streaming_data?.server_abr_streaming_url,
+        refreshed.streaming_data?.server_abr_streaming_url
       );
       const newCfg =
         refreshed.player_config?.media_common_config
@@ -253,14 +253,14 @@ class DownloadCoordinator {
   constructor(
     private readonly sabrFactory: SabrStreamFactory,
     private readonly outputFiles: OutputFileFactory,
-    private readonly sinks: StreamSinkFactory,
+    private readonly sinks: StreamSinkFactory
   ) {}
 
   async download(
     videoId: string,
     opts: SabrPlaybackOptions,
     outputFolder: string,
-    onProgress?: ProgressCallback,
+    onProgress?: ProgressCallback
   ) {
     const { title, videoStream, audioStream, selectedFormats } =
       await this.sabrFactory.create(videoId, opts);
@@ -280,9 +280,9 @@ class DownloadCoordinator {
 
     if (wantsAudio) {
       const output = this.outputFiles.create(
-        title,
+        "audio",
         selectedFormats.audioFormat.mimeType!,
-        outputFolder,
+        outputFolder
       );
       downloadQueue.push(
         audioStream.pipeTo(
@@ -291,18 +291,18 @@ class DownloadCoordinator {
             selectedFormats.audioFormat,
             output.stream,
             onProgress,
-            "audio",
-          ),
-        ),
+            "audio"
+          )
+        )
       );
       outputs.audio = output.filePath;
     }
 
     if (wantsVideo) {
       const output = this.outputFiles.create(
-        title,
+        "video",
         selectedFormats.videoFormat.mimeType!,
-        outputFolder,
+        outputFolder
       );
       downloadQueue.push(
         videoStream.pipeTo(
@@ -311,9 +311,9 @@ class DownloadCoordinator {
             selectedFormats.videoFormat,
             output.stream,
             onProgress,
-            "video",
-          ),
-        ),
+            "video"
+          )
+        )
       );
       outputs.video = output.filePath;
     }
@@ -331,7 +331,7 @@ export declare interface DownloadOptions {
 
 export default async function YoutubeVideoDownloader(
   videoId: string,
-  outputPath: string,
+  outputPath: string
 ) {
   const innertube = await Innertube.create({ cache: new UniversalCache(true) });
   const player = new PlayerRequestService(innertube);
@@ -341,14 +341,14 @@ export default async function YoutubeVideoDownloader(
   const coordinator = new DownloadCoordinator(
     sabrFactory,
     new OutputFileFactory(),
-    new StreamSinkFactory(),
+    new StreamSinkFactory()
   );
 
   return {
     videoId,
     async download(
       downloadOptions: DownloadOptions,
-      onProgress?: ProgressCallback,
+      onProgress?: ProgressCallback
     ) {
       const enabledTrackTypes: EnabledTrackTypes =
         downloadOptions.audio && !downloadOptions.video
@@ -367,7 +367,7 @@ export default async function YoutubeVideoDownloader(
         videoId,
         options,
         outputPath,
-        onProgress,
+        onProgress
       );
 
       return {

@@ -1,5 +1,6 @@
 import { getBestThumbnailUrl } from "@internal/youtube-api/thumbnail";
 import type { RefinedVideoMetadata, VideoMetadata } from "./video-typings";
+import path from "node:path";
 
 /**
  * This RegExp is executed against the HTML content of a Youtube video page in
@@ -18,7 +19,7 @@ class VideoNotFoundError extends Error {
 }
 
 export default async function getVideoMetadata(
-  videoId: string,
+  videoId: string
 ): Promise<RefinedVideoMetadata> {
   const url = new URL(`https://www.youtube.com/watch?v=${videoId}`);
 
@@ -50,7 +51,7 @@ export default async function getVideoMetadata(
     title: videoMetadata.videoDetails.title.replace(/[^\x20-\x7E]+/gi, "_"),
     author: videoMetadata.videoDetails.author.replace(/[^\x20-\x7E]+/gi, "_"),
     thumbnailUrl: getBestThumbnailUrl(
-      videoMetadata.videoDetails.thumbnail.thumbnails,
+      videoMetadata.videoDetails.thumbnail.thumbnails
     ),
     // date: parseDate(
     //   new Date(videoMetadata.microformat.playerMicroformatRenderer.publishDate),

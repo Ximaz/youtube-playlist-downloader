@@ -6,12 +6,12 @@ import type { RedisClientType } from "@redis/client";
 export default class CacheRedis implements Cache {
   constructor(
     readonly cacheTTL: number, // In seconds
-    private readonly redisClient: RedisClientType,
+    private readonly redisClient: RedisClientType
   ) {}
 
   async setVideoMetadata(
     videoId: string,
-    videoMetadata: RefinedVideoMetadata,
+    videoMetadata: RefinedVideoMetadata
   ): Promise<void> {
     const cacheKey = `videos-${videoId}`;
     await this.redisClient.set(cacheKey, JSON.stringify(videoMetadata), {
@@ -25,7 +25,7 @@ export default class CacheRedis implements Cache {
 
   async getVideoMetadata(
     videoId: string,
-    forceRefresh: boolean = false,
+    forceRefresh: boolean = false
   ): Promise<RefinedVideoMetadata | null> {
     const cacheKey = `videos-${videoId}`;
     if (forceRefresh) {
@@ -42,7 +42,7 @@ export default class CacheRedis implements Cache {
 
   async setPlaylistMetadata(
     playlistId: string,
-    playlistMetadata: RefinedPlaylistMetadata,
+    playlistMetadata: RefinedPlaylistMetadata
   ): Promise<void> {
     const cacheKey = `playlists-${playlistId}`;
     await this.redisClient.set(cacheKey, JSON.stringify(playlistMetadata), {
@@ -56,7 +56,7 @@ export default class CacheRedis implements Cache {
 
   async getPlaylistMetadata(
     playlistId: string,
-    forceRefresh: boolean = false,
+    forceRefresh: boolean = false
   ): Promise<RefinedPlaylistMetadata | null> {
     const cacheKey = `playlists-${playlistId}`;
     if (forceRefresh) {
