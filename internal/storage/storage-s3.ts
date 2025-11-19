@@ -212,17 +212,8 @@ export default class StorageS3 implements Storage {
     if (undefined === result.Body)
       throw new Error(`Unable to find the document. (loc: ${bucket}/${key})`);
 
-    const nodeWebStream = new NodeWebStream({
-      async pull(controller) {
-        const reader = (result.Body as ReadableStream).getReader();
-        const { done, value } = await reader.read();
-        if (done) controller.close();
-        else controller.enqueue(value);
-      },
-    });
-
     return {
-      stream: Readable.fromWeb(nodeWebStream),
+      stream: result.Body as Readable,
       path: { parent, filename },
       metadata: result.Metadata,
     };
