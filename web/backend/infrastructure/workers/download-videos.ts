@@ -19,7 +19,7 @@ import CommunicationService, {
 const { videoIds, audio, video, convert } = workerData as VideosDownloadDto;
 
 const communicationService = new CommunicationService(
-  new CommunicationServiceClientWorker(parentPort),
+  new CommunicationServiceClientWorker(parentPort)
 );
 
 async function startTask() {
@@ -27,6 +27,11 @@ async function startTask() {
 
   const outputPath = await mkdtemp(path.join(tmpdir(), `ypd-${videoId}`));
   const downloader = await YoutubeVideoDownloader(videoId, outputPath);
+
+  let audioDownloadTotal: number = 0;
+  let videoDownloadTotal: number = 0;
+  let audioDownloadProcessed: number = 100;
+  let videoDownloadProcessed: number = 100;
 
   const start = Date.now();
 
@@ -36,13 +41,22 @@ async function startTask() {
       video,
     },
     (progress) => {
+      if (progress.type === "audio") {
+        audioDownloadProcessed = progress.receivedBytes;
+        audioDownloadTotal = progress.totalBytes;
+      }
+      if (progress.type === "video") {
+        videoDownloadProcessed = progress.receivedBytes;
+        videoDownloadTotal = progress.totalBytes;
+      }
+
       communicationService.sendDownloadProgress({
         videoId: progress.videoId,
         type: "DOWNLOAD",
-        processed: progress.receivedBytes,
-        total: progress.totalBytes,
+        processed: (audioDownloadProcessed + videoDownloadProcessed) / 200,
+        total: audioDownloadTotal + videoDownloadTotal,
       });
-    },
+    }
   );
 
   const videoMetadata = await getVideoMetadata(videoId);
@@ -57,8 +71,8 @@ async function startTask() {
         createReadStream(audioPath, { autoClose: true }),
         videoMetadata,
         "audio/weba",
-        { audio: true, video: false, convert: false },
-      ),
+        { audio: true, video: false, convert: false }
+      )
     );
   }
 
@@ -69,8 +83,8 @@ async function startTask() {
         createReadStream(videoPath, { autoClose: true }),
         videoMetadata,
         "video/webm",
-        { audio: false, video: true, convert: false },
-      ),
+        { audio: false, video: true, convert: false }
+      )
     );
   }
 
@@ -86,7 +100,10 @@ async function startTask() {
         const [_, convertedStream] = await mergeToWEBM(
           audioPath,
           videoPath,
-          path.join(outputPath, videoMetadata.title + ".webm"),
+          path.join(
+            outputPath,
+            videoMetadata.title.replaceAll(path.sep, "_") + ".webm"
+          ),
           ({ processed, total }) => {
             communicationService.sendConvertProgress({
               processed,
@@ -94,7 +111,7 @@ async function startTask() {
               type: "CONVERT",
               videoId,
             });
-          },
+          }
         );
 
         await youtubeArtifactManager.pushStream(
@@ -102,9 +119,9 @@ async function startTask() {
           convertedStream,
           videoMetadata,
           "video/webm",
-          { audio, video, convert },
+          { audio, video, convert }
         );
-      })(),
+      })()
     );
   }
 
@@ -114,12 +131,15 @@ async function startTask() {
         (async () => {
           const thumbnailPath = await downloadThumbnail(
             videoMetadata.thumbnailUrl,
-            path.join(outputPath, "thumbnail.jpeg"),
+            path.join(outputPath, "thumbnail.jpeg")
           );
 
           const [_, convertedStream] = await audioConvertor(
             audioPath!,
-            path.join(outputPath, videoMetadata.title + ".m4a"),
+            path.join(
+              outputPath,
+              videoMetadata.title.replaceAll(path.sep, "_") + ".m4a"
+            ),
             ({ processed, total }) => {
               communicationService.sendConvertProgress({
                 processed,
@@ -131,7 +151,7 @@ async function startTask() {
             {
               metadata: videoMetadata,
               thumbnailPath: thumbnailPath,
-            },
+            }
           );
 
           await youtubeArtifactManager.pushStream(
@@ -139,9 +159,9 @@ async function startTask() {
             convertedStream,
             videoMetadata,
             "audio/mpeg",
-            { audio, video, convert },
+            { audio, video, convert }
           );
-        })(),
+        })()
       );
     }
 
@@ -150,7 +170,10 @@ async function startTask() {
         (async () => {
           const [_, convertedStream] = await videoConvertor(
             videoPath!,
-            path.join(outputPath, videoMetadata.title + ".mp4"),
+            path.join(
+              outputPath,
+              videoMetadata.title.replaceAll(path.sep, "_") + ".mp4"
+            ),
             ({ processed, total }) => {
               communicationService.sendConvertProgress({
                 processed,
@@ -158,7 +181,7 @@ async function startTask() {
                 type: "CONVERT",
                 videoId,
               });
-            },
+            }
           );
 
           await youtubeArtifactManager.pushStream(
@@ -166,9 +189,9 @@ async function startTask() {
             convertedStream,
             videoMetadata,
             "video/mp4",
-            { audio, video, convert },
+            { audio, video, convert }
           );
-        })(),
+        })()
       );
     }
 
@@ -178,7 +201,10 @@ async function startTask() {
           const [_, convertedStream] = await mergeToMPEG(
             audioPath!,
             videoPath!,
-            path.join(outputPath, videoMetadata.title + ".mp4"),
+            path.join(
+              outputPath,
+              videoMetadata.title.replaceAll(path.sep, "_") + ".mp4"
+            ),
             ({ processed, total }) => {
               communicationService.sendConvertProgress({
                 processed,
@@ -186,7 +212,7 @@ async function startTask() {
                 type: "CONVERT",
                 videoId,
               });
-            },
+            }
           );
 
           await youtubeArtifactManager.pushStream(
@@ -194,9 +220,9 @@ async function startTask() {
             convertedStream,
             videoMetadata,
             "video/mp4",
-            { audio, video, convert },
+            { audio, video, convert }
           );
-        })(),
+        })()
       );
     }
   }
@@ -215,7 +241,7 @@ parentPort?.on("message", (message) => {
   startTask()
     .then((timeToComplete) => {
       console.log(
-        `Time to complete: ${(timeToComplete / 1000).toFixed(1)} seconds`,
+        `Time to complete: ${(timeToComplete / 1000).toFixed(1)} seconds`
       );
       communicationService.sendClose();
     })
