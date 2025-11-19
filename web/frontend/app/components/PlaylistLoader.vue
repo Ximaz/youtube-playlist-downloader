@@ -21,18 +21,16 @@
       </div>
     </div>
 
-    <div v-if="exportSteps.length > 0">
-      <VideoExportStatus
-        v-for="video in playlistMetadata.videos"
-        :key="video.videoId"
-        ref="videos"
-        :video="video"
-        :steps="exportSteps"
-        :force-refresh="forceRefresh"
-        @progress="updateTotalProgressBar"
-        @error="(e) => showError(e.name, e.message)"
-      />
-    </div>
+    <VideoExportStatus
+      v-for="video in playlistMetadata.videos"
+      :key="video.videoId"
+      ref="videos"
+      :video="video"
+      :steps="exportSteps"
+      :force-refresh="forceRefresh"
+      @progress="updateTotalProgressBar"
+      @error="(e) => showError(e.name, e.message)"
+    />
   </div>
   <ErrorModal
     :title="errorTitle"
