@@ -40,23 +40,21 @@ services:
       - "8080:3000"
     networks:
       - ypd-network
-    # restart: unless-stopped
+    restart: unless-stopped
 
   ypd-frontend:
     depends_on:
       - ypd-backend
     image: ypd-frontend
     build:
-      context: frontend/
-      dockerfile: Dockerfile
+      context: ../
+      dockerfile: ./build/package/frontend/Dockerfile
+    env_file: ../web/frontend/.env.production.local
     container_name: ypd-frontend
     ports:
-      - 8081:3001
+      - "8081:3001"
     networks:
       - ypd-network
-    environment:
-      - PORT=3001
-      - BACKEND_API=http://ypd-backend:3000
     restart: unless-stopped
 
 volumes:
