@@ -35,7 +35,7 @@ services:
       context: ../
       dockerfile: ./build/package/backend/Dockerfile
     container_name: ypd-backend
-    env_file: ../web/backend/.env
+    env_file: ../web/backend/.env.production.local
     ports:
       - "8080:3000"
     networks:
