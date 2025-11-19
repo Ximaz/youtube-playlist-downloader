@@ -10,10 +10,6 @@ import type { RefinedVideoMetadata, VideoMetadata } from "./video-typings";
 const VIDEO_METADATA_REGEX =
   /var ytInitialPlayerResponse = (\{.+\});(?:var head = document\.getElementsByTagName\('head'\)\[0\];)?\s?var meta = document\.createElement\('meta'\);/;
 
-function parseDate(date: Date) {
-  return date.toISOString().split("T")[0]!;
-}
-
 class VideoNotFoundError extends Error {
   constructor(videoId: string) {
     super();
@@ -51,7 +47,7 @@ export default async function getVideoMetadata(
 
   return {
     videoId,
-    title: videoMetadata.videoDetails.title,
+    title: videoMetadata.videoDetails.title.replace(/[^\x20-\x7E]+/gi, "_"),
     author: videoMetadata.videoDetails.author.replace(/[^\x20-\x7E]+/gi, "_"),
     thumbnailUrl: getBestThumbnailUrl(
       videoMetadata.videoDetails.thumbnail.thumbnails,

@@ -32,22 +32,15 @@ services:
       - ypd-redis
     image: ypd-backend
     build:
-      context: backend/
-      dockerfile: Dockerfile
+      context: ../
+      dockerfile: ./build/package/backend/Dockerfile
     container_name: ypd-backend
+    env_file: ../web/backend/.env
     ports:
       - "8080:3000"
     networks:
       - ypd-network
-    environment:
-      - S3_API_REGION=eu-west-1
-      - S3_API_ENDPOINT=http://ypd-minio:9000
-      - S3_API_ACCESS_KEY_ID=minioadmin
-      - S3_API_SECRET_ACCESS_KEY=minioadmin
-      - REDIS_HOST=ypd-redis
-      - REDIS_PORT=6379
-      - WORKERS_CAPACITY=1
-    restart: unless-stopped
+    # restart: unless-stopped
 
   ypd-frontend:
     depends_on:

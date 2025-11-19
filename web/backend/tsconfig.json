@@ -1,10 +1,10 @@
 {
-  "extends": "../tsconfig.json",
+  "extends": "../../tsconfig.json",
   "compilerOptions": {
     "strict": true,
     "baseUrl": "./",
     "paths": {
-      "@internal/*": ["../internal/*"],
+      "@internal/*": ["../../internal/*"],
       "@web/*": ["./*"]
     }
   },
