@@ -109,15 +109,22 @@ docker compose -f deploy/docker-compose.development.yml up \
     -d
 ```
 
+Then, you will have to install dependencies :
+```bash
+bun install
+cd web/backend && bun install && cd -
+cd web/frontend && pnpm install && cd -
+```
+
 To deploy the app for development purposes, you can type the following command
 to start the web services :
 ```bash
-bun web:backend:dev          # run the backend service
-pnpm run -C web/frontend dev # run the frontend service
+bun web:backend:dev  # run the backend service
+bun web:frontend:dev # run the frontend service
 ```
 
 Then, the backend and frontend applications should be reachable on port `3000`
-and `3001` respectively.
+and `4000` respectively.
 
 ### Production deployment
 
