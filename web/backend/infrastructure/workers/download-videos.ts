@@ -49,6 +49,16 @@ async function startTask() {
         videoDownloadProcessed = progress.receivedBytes;
         videoDownloadTotal = progress.totalBytes;
       }
+      console.log(
+        {
+          audioDownloadProcessed,
+          audioDownloadTotal,
+        },
+        { videoDownloadProcessed, videoDownloadTotal },
+        progress,
+        (audioDownloadProcessed + videoDownloadProcessed) / 200,
+        audioDownloadProcessed + videoDownloadProcessed
+      );
 
       communicationService.sendDownloadProgress({
         videoId: progress.videoId,
@@ -141,6 +151,7 @@ async function startTask() {
               videoMetadata.title.replaceAll(path.sep, "_") + ".m4a"
             ),
             ({ processed, total }) => {
+              console.log({ processed, total });
               communicationService.sendConvertProgress({
                 processed,
                 total,

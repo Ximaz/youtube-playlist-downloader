@@ -11,7 +11,7 @@
     "cli:videos": "bun ./cmd/youtube-videos-downloader.ts",
     "cli:playlist": "bun ./cmd/youtube-playlist-downloader.ts",
     "web:backend:dev": "bun run --cwd ./web/backend --hot index.ts",
-    "web:frontend:dev": "pnpm run -C ./web/frontend dev"
+    "web:frontend:dev": "pnpm -C ./web/frontend run dev"
   },
   "devDependencies": {
     "@types/archiver": "^7.0.0",
