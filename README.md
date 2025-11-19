@@ -90,24 +90,60 @@ All binaries will be output to the `bin` folder.
 
 ## Web UI
 
-A web UI is under construction, powered by [`Hono`](https://hono.dev/). It will
+A web application can be deployed in order to let you use the features easily.
+Powered by [`Hono`](https://hono.dev/) and [`Nuxt`](https://nuxt.com/), it can
 create different workers to treat the download process asynchronously while
 providing a responsive user interface.
 
-## What is comming up next
+### Development deployment
 
-The web UI is not the only feature under construction, although it is the main
-one.
+Beforehand, make sure both Redis and MinIO servers are reachable. To make it
+easier, a `docker-compose.development.yml` file is placed in the `deploy/`
+directory to let you deploy those two applications locally and easily.
 
-I plan to add the audio and video muxer / convertor, as I already did in the
-first version, using [`ffmpeg`](https://ffmpeg.org/). This will be mostly wanted
-for Apple Music enjoyers as it will let you convert audio files with thumbnail
-and audio metadata included in a file that is ready to be imported in the app.
+You can make sure they both are started using the following command :
+```bash
+docker compose -f deploy/docker-compose.development.yml up \
+    ypd-minio \
+    ypd-redis \
+    -d
+```
 
-It will also give you a built-in way to merge both audio and video streams that
-are initially downloaded in separate files.
+To deploy the app for development purposes, you can type the following command
+to start the web services :
+```bash
+bun web:backend:dev          # run the backend service
+pnpm run -C web/frontend dev # run the frontend service
+```
 
-Finally, as in the first version of this project, all the downloaded as well as
-the converted files will end up in a local S3 server to store the content, in
-case it gets deleted from Youtube or simply to give you a way to export your
-favorite artifacts easily. It will be powered by [`MinIO`](https://www.min.io/).
+Then, the backend and frontend applications should be reachable on port `3000`
+and `3001` respectively.
+
+### Production deployment
+
+To deploy the app, you can choose between two different kinds of deployments :
+- `development` : builds the Docker image from the repository,
+- `production`  : pull the Docker image from the GitHub repository.
+
+You can use the following command to deploy :
+```bash
+docker compose -f deploy/docker-compose.[deployment-type].yml up
+```
+
+If everything works as expected, you should be able to access the frontend app
+on port `8081`.
+
+## Features
+
+### [`FFmpeg`](https://ffmpeg.org/): convertion and muxing
+
+This project exposes ways to convert audio and video streams as well as muxing
+them together. This will be mostly wanted for Apple Music enjoyers as it will
+let you convert audio files with thumbnail and audio metadata included in a file
+that is ready to be imported in the app.
+
+### [`MinIO`](https://www.min.io/): file archiving
+
+All downloaded, and converted, files will end up in a local S3 server to store
+the content, in case it gets deleted from Youtube or simply to give you a way to
+export your favorite artifacts easily.
