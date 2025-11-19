@@ -49,16 +49,6 @@ async function startTask() {
         videoDownloadProcessed = progress.receivedBytes;
         videoDownloadTotal = progress.totalBytes;
       }
-      console.log(
-        {
-          audioDownloadProcessed,
-          audioDownloadTotal,
-        },
-        { videoDownloadProcessed, videoDownloadTotal },
-        progress,
-        (audioDownloadProcessed + videoDownloadProcessed) / 200,
-        audioDownloadProcessed + videoDownloadProcessed
-      );
 
       communicationService.sendDownloadProgress({
         videoId: progress.videoId,
@@ -124,6 +114,14 @@ async function startTask() {
           }
         );
 
+        // Making sure the conversion results in a 100%
+        communicationService.sendConvertProgress({
+          processed: 1,
+          total: 1,
+          type: "CONVERT",
+          videoId,
+        });
+
         await youtubeArtifactManager.pushStream(
           videoId,
           convertedStream,
@@ -165,6 +163,14 @@ async function startTask() {
             }
           );
 
+          // Making sure the conversion results in a 100%
+          communicationService.sendConvertProgress({
+            processed: 1,
+            total: 1,
+            type: "CONVERT",
+            videoId,
+          });
+
           await youtubeArtifactManager.pushStream(
             videoId,
             convertedStream,
@@ -194,6 +200,14 @@ async function startTask() {
               });
             }
           );
+
+          // Making sure the conversion results in a 100%
+          communicationService.sendConvertProgress({
+            processed: 1,
+            total: 1,
+            type: "CONVERT",
+            videoId,
+          });
 
           await youtubeArtifactManager.pushStream(
             videoId,
@@ -225,6 +239,14 @@ async function startTask() {
               });
             }
           );
+
+          // Making sure the conversion results in a 100%
+          communicationService.sendConvertProgress({
+            processed: 1,
+            total: 1,
+            type: "CONVERT",
+            videoId,
+          });
 
           await youtubeArtifactManager.pushStream(
             videoId,
