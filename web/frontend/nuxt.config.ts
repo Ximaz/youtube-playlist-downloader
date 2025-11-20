@@ -10,6 +10,7 @@ export default defineNuxtConfig({
   ui: {
     prefix: "U",
   },
+  app: { head: { title: "Youtube Playlist Downloader" } },
   ssr: false,
   nitro: {
     experimental: {
