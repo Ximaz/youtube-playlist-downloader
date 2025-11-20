@@ -149,7 +149,6 @@ async function startTask() {
               videoMetadata.title.replaceAll(path.sep, "_") + ".m4a"
             ),
             ({ processed, total }) => {
-              console.log({ processed, total });
               communicationService.sendConvertProgress({
                 processed,
                 total,
@@ -272,10 +271,7 @@ async function startTask() {
 parentPort?.on("message", (message) => {
   if (message !== "start") return void 0;
   startTask()
-    .then((timeToComplete) => {
-      console.log(
-        `Time to complete: ${(timeToComplete / 1000).toFixed(1)} seconds`
-      );
+    .then((_timeToComplete) => {
       communicationService.sendClose();
     })
     .catch((err: unknown) => {
