@@ -14,6 +14,7 @@ import {
   type Types,
   type IPlayerResponse,
 } from "youtubei.js";
+import FormatXTags from "youtubei.js/";
 
 Platform.shim.eval = async (
   data: Types.BuildScriptResult,
@@ -181,6 +182,11 @@ class WebPoTokenService {
   }
 }
 
+export interface KeyValuePair {
+  key?: string | undefined;
+  value?: string | undefined;
+}
+
 class SabrStreamFactory {
   constructor(
     private readonly innertube: Innertube,
@@ -203,8 +209,40 @@ class SabrStreamFactory {
 
     if (!cfg || !serverUrl) throw new Error("Missing streaming config");
 
-    const sabrFormats =
-      response.streaming_data?.adaptive_formats.map(buildSabrFormat) || [];
+    const sabrFormats = response.streaming_data?.adaptive_formats
+      .filter((format) => {
+        // NOTE: This filter is a temporary solution before the actual patch is
+        // being merged to allow for ignoring 'is_vb' (Voice Boost). It can
+        // cause issues for some video streams.
+        // To get more details :
+        // https://github.com/LuanRT/YouTube.js/issues/1095
+
+        if (!format.xtags) {
+          return !("is_vb" in format);
+        }
+        function base64ToU8(base64: string): Uint8Array {
+          const standard_base64 = base64.replace(/-/g, "+").replace(/_/g, "/");
+          const padded_base64 = standard_base64.padEnd(
+            standard_base64.length + ((4 - (standard_base64.length % 4)) % 4),
+            "="
+          );
+          return new Uint8Array(
+            Buffer.from(padded_base64, "base64")
+              .toString("utf-8")
+              .split("")
+              .map((char) => char.charCodeAt(0))
+          );
+        }
+
+        const bytes = base64ToU8(format.xtags);
+        const isVb =
+          bytes.length >= 9 &&
+          bytes[4]! == 118 && // 'v'
+          bytes[5]! == 98 && // 'b'
+          bytes[8]! == 49; // '1'
+        return !isVb;
+      })
+      .map(buildSabrFormat);
 
     const stream = new SabrStream({
       formats: sabrFormats,
@@ -358,8 +396,16 @@ export default async function YoutubeVideoDownloader(
             : EnabledTrackTypes.VIDEO_AND_AUDIO;
 
       const options: SabrPlaybackOptions = {
-        preferWebM: true,
-        preferOpus: true,
+        preferWebM:
+          enabledTrackTypes === EnabledTrackTypes.AUDIO_ONLY ||
+          enabledTrackTypes === EnabledTrackTypes.VIDEO_AND_AUDIO
+            ? true
+            : undefined,
+        preferOpus:
+          enabledTrackTypes === EnabledTrackTypes.VIDEO_ONLY ||
+          enabledTrackTypes === EnabledTrackTypes.VIDEO_AND_AUDIO
+            ? true
+            : undefined,
         enabledTrackTypes,
       };
 
