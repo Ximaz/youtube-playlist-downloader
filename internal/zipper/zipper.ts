@@ -12,12 +12,12 @@ export interface ZipperProgress {
 
 export default class Zipper {
   constructor(
-    private readonly youtubeArtifactManager: YoutubeArtifactManager,
+    private readonly youtubeArtifactManager: YoutubeArtifactManager
   ) {}
 
   async *generateArchive(
     videoIds: string[],
-    options: { audio: boolean; video: boolean; convert: boolean },
+    options: { audio: boolean; video: boolean; convert: boolean }
   ): AsyncGenerator<Uint8Array> {
     const archive = archiver("zip", { zlib: { level: 9 } });
 
@@ -28,16 +28,16 @@ export default class Zipper {
           const bytes = new Uint8Array(
             (chunk as Buffer).buffer,
             (chunk as Buffer).byteOffset,
-            (chunk as Buffer).byteLength,
+            (chunk as Buffer).byteLength
           );
           yield bytes;
         }
-      })(),
+      })()
     );
 
     const streams = await this.youtubeArtifactManager.pullVideosStreams(
       videoIds,
-      options,
+      options
     );
 
     for (const { stream, metadata, path: filepath } of streams as {
@@ -45,7 +45,7 @@ export default class Zipper {
       metadata: RefinedVideoMetadata;
       path: StoragePath;
     }[]) {
-      const filename = `${metadata.title}${path.extname(filepath.filename)}`;
+      const filename = `${metadata.title.replaceAll(path.sep, "_")}${path.extname(filepath.filename)}`;
       archive.append(stream, {
         name: path.join("/", "youtube-videos/", filename),
       });
