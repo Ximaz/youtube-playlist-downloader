@@ -26,5 +26,5 @@ export const usePlaylistsStore = defineStore(
       storage: localStorage,
       pick: ["playlists"],
     },
-  }
+  },
 );

@@ -86,7 +86,7 @@ async function loadPlaylist(newPlaylistId: string) {
   await nextTick();
   await playlistLoader.value?.loadPlaylist(
     newPlaylistId,
-    playlistLookup.value?.forceRefresh ?? false
+    playlistLookup.value?.forceRefresh ?? false,
   );
 }
 
@@ -117,7 +117,7 @@ onMounted(async () => {
       headers: {
         Authorization: `Bearer ${token}`,
       },
-    }
+    },
   );
   playlistsStore.setPlaylists(playlists);
 

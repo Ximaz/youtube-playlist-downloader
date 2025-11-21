@@ -20,5 +20,5 @@ export const useUserStore = defineStore(
       storage: localStorage,
       pick: ["token"],
     },
-  }
+  },
 );
