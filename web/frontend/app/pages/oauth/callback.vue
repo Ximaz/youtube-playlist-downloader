@@ -25,7 +25,7 @@ onMounted(async () => {
       headers: {
         "Content-Type": "application/json",
       },
-    }
+    },
   );
 
   userStore.setToken(response);
