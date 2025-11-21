@@ -21,7 +21,10 @@
       />
     </UButtonGroup>
 
-    <UCheckbox v-model="forceRefresh" label="Force refresh" />
+    <div class="flex flex-row w-full justify-around items-center mt-2">
+      <OAuthButton />
+      <UCheckbox v-model="forceRefresh" label="Force refresh" />
+    </div>
   </div>
 
   <ErrorModal
