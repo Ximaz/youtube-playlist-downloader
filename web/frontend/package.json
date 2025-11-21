@@ -11,8 +11,8 @@
     "postinstall": "nuxt prepare",
     "lint": "eslint . --fix",
     "lint:check": "eslint .",
-    "format": "prettier app/ --write",
-    "format:check": "prettier -c app/"
+    "format": "prettier app/ server/ --write",
+    "format:check": "prettier -c app/ server/"
   },
   "dependencies": {
     "@nuxt/eslint": "^1.9.0",
