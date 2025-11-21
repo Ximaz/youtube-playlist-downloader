@@ -142,6 +142,27 @@ on port `8081`.
 
 ## Features
 
+### OAuth2 Setup
+
+To use the account playlists feature, you need OAuth2 credentials:
+
+1. Go to the [`Google Cloud Console`](https://console.cloud.google.com/).
+
+2. Create a project and generate OAuth2 credentials (Client ID & Client Secret).
+
+3. Set the redirect URIs :
+- for local development : `http://localhost:4000/oauth/callback`,
+- for local production : `http://localhost:8081/oauth/callback`.
+
+4. Add your credentials in `.env` (or `.env.production.local`)
+```bash
+# ./web/frontend/.env
+BACKEND_API=http://localhost:3000
+GOOGLE_CLIENT_ID=...-....apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=GOCSPX-...-...
+PORT=3001
+```
+
 ### [`FFmpeg`](https://ffmpeg.org/): convertion and muxing
 
 This project exposes ways to convert audio and video streams as well as muxing
