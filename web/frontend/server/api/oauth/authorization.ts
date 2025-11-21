@@ -11,7 +11,7 @@ export default defineEventHandler(async (event) => {
   url.searchParams.append("redirect_uri", callbackUrl);
   url.searchParams.append(
     "scope",
-    "https://www.googleapis.com/auth/youtube.readonly"
+    "https://www.googleapis.com/auth/youtube.readonly",
   );
   url.searchParams.append("response_type", "code");
   url.searchParams.append("access_type", "offline");
