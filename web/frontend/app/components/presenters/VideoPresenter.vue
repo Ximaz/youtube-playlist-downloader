@@ -1,20 +1,22 @@
 <template>
-  <div class="flex items-center gap-4 w-full px-4">
+  <div>
     <img
-      class="w-auto h-32 object-cover"
+      class="size-10 rounded-box w-full aspect-video object-contain bg-black"
       :src="video.thumbnailUrl"
-      :alt="`ThumbnailUrl of the video ${video.title}`"
+      :alt="`ThumbnailUrl of the video '${video.title}'`"
     />
-    <div class="flex flex-col gap-2 w-full">
-      <p class="w-full">
-        {{ video.title }}
-      </p>
-      <p class="w-full">
-        {{ video.author }}
-      </p>
-      <UProgress class="w-full" :model-value="progress" status />
+  </div>
+  <div>
+    <div>
+      {{ video.author }}
+    </div>
+    <div class="text-xs uppercase font-semibold opacity-60">
+      {{ video.title }}
     </div>
   </div>
+  <p class="list-col-wrap text-xs">
+    <progress class="progress w-full" :value="progress" max="100" />
+  </p>
 </template>
 
 <script setup lang="ts">
@@ -28,7 +30,6 @@ const { video, steps } = defineProps<{
     thumbnailUrl: string;
   };
   steps?: string[];
-  forceRefresh: boolean;
 }>();
 
 const emit = defineEmits<{

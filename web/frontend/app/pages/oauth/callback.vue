@@ -1,7 +1,7 @@
 <!-- eslint-disable vue/multi-word-component-names -->
 <template>
   <div>
-    <h1>Hello</h1>
+    <h1>Redirecting ...</h1>
   </div>
 </template>
 
@@ -30,6 +30,6 @@ onMounted(async () => {
 
   userStore.setToken(response);
 
-  router.push("/");
+  router.push({ name: "index" });
 });
 </script>

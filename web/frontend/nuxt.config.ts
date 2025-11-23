@@ -5,16 +5,13 @@ export default defineNuxtConfig({
   },
   compatibilityDate: "2025-07-15",
   devtools: { enabled: false },
-  modules: [
-    "@nuxt/eslint",
-    "@nuxt/ui",
-    "@pinia/nuxt",
-    "pinia-plugin-persistedstate/nuxt",
-  ],
-  css: ["~/assets/css/main.css"],
-  ui: {
-    prefix: "U",
+  modules: ["@nuxt/eslint", "@pinia/nuxt", "pinia-plugin-persistedstate/nuxt"],
+  router: {
+    options: {
+      scrollBehaviorType: "smooth",
+    },
   },
+  css: ["~/assets/css/main.css"],
   app: { head: { title: "Youtube Playlist Downloader" } },
   ssr: false,
   nitro: {

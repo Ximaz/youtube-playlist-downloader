@@ -1,33 +1,34 @@
 <template>
   <div class="flex flex-col items-center gap-2">
-    <UButtonGroup>
-      <UInput
-        icon="i-lucide-search"
-        class="w-md"
-        size="xl"
-        color="neutral"
-        variant="outline"
-        type="url"
-        placeholder="https://www.youtube.com/playlist?list=PL..."
-        v-model="playlistUrl"
-      />
+    <div class="join w-full">
+      <div class="w-full">
+        <label class="input validator join-item w-full">
+          <input
+            type="url"
+            class="grow"
+            placeholder="https://www.youtube.com/playlist?list=PL..."
+            v-model="playlistUrl"
+          />
+        </label>
+        <div class="validator-hint hidden">
+          Enter a valid Youtube playlist URL
+        </div>
+      </div>
 
-      <UButton
-        class="cursor-pointer"
-        color="neutral"
-        label="Find the playlist"
-        variant="subtle"
-        @click="resolvePlaylist"
-      />
-    </UButtonGroup>
-
-    <div class="flex flex-row w-full justify-around items-center mt-2">
-      <OAuthButton />
-      <UCheckbox v-model="forceRefresh" label="Force refresh" />
+      <button class="btn join-item" @click="resolvePlaylist">
+        Find the playlist
+      </button>
     </div>
+
+    <!-- <div class="flex flex-row w-full justify-around items-center mt-2">
+      <label class="label">
+        <input v-model="forceRefresh" type="checkbox" class="checkbox" />
+        Force refresh
+      </label>
+    </div> -->
   </div>
 
-  <ErrorModal
+  <Modal
     :title="errorTitle"
     :description="errorDescription"
     :open="errorShow"
@@ -37,9 +38,10 @@
 
 <script setup lang="ts">
 import { ref } from "vue";
-import ErrorModal from "@/components/ErrorModal.vue";
 
-const emit = defineEmits<{ search: [playlistId: string] }>();
+const emit = defineEmits<{
+  search: [playlistId: string, forceRefresh: boolean];
+}>();
 
 const playlistUrl = ref<string>("");
 const forceRefresh = ref<boolean>(false);
@@ -64,10 +66,6 @@ function resolvePlaylist() {
   errorShow.value = false;
 
   const playlistId = playlistIdMatch[1] as string;
-  emit("search", playlistId);
+  emit("search", playlistId, forceRefresh.value);
 }
-
-defineExpose({
-  forceRefresh,
-});
 </script>
