@@ -18,7 +18,7 @@
         </div>
       </div>
       <div class="mockup-phone border-[#3b3b3b]">
-        <div class="mockup-phone-camera"></div>
+        <!-- <div class="mockup-phone-camera"></div> -->
         <div class="mockup-phone-display">
           <img alt="wallpaper" :src="AppleMusicBackground" />
         </div>
@@ -70,7 +70,7 @@ async function loadPlaylist(newPlaylistId: string, forceRefresh?: boolean) {
   playlistLookedUp.value = true;
   await downloadPlaylist.value?.loadPlaylist(
     newPlaylistId,
-    forceRefresh ?? false,
+    forceRefresh ?? false
   );
 }
 
@@ -107,7 +107,7 @@ onMounted(async () => {
       headers: {
         Authorization: `Bearer ${token}`,
       },
-    },
+    }
   );
   playlistsStore.setPlaylists(playlists);
 
