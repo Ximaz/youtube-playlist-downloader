@@ -17,7 +17,11 @@
       </div>
       <div class="mockup-phone w-1/2 border-[#3b3b3b]">
         <div class="mockup-phone-display">
-          <img alt="wallpaper" :src="AppleMusicBackground" />
+          <img
+            alt="wallpaper"
+            class="pointer-events-none"
+            :src="AppleMusicBackground"
+          />
         </div>
       </div>
     </div>
