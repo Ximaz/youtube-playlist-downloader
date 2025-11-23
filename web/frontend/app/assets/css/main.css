@@ -1,2 +1,6 @@
 @import "tailwindcss";
-@import "@nuxt/ui";
+@plugin "daisyui" {
+  themes:
+    light --default,
+    dark --prefersdark;
+}

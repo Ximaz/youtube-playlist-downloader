@@ -3,36 +3,49 @@
     v-if="null === playlistMetadata"
     class="w-full flex items-center justify-center"
   >
-    <Loader size="lg" />
+    <span class="loading loading-spinner loading-lg" />
   </div>
   <div v-else class="w-full flex flex-col items-center justify-evenly gap-4">
     <div class="w-full h-48 flex flex-col justify-evenly items-center">
-      <ExportSettings
-        :label="`Export playlist '${playlistMetadata.title}'`"
-        @export="exportVideos"
-        :loading="exportStarted"
+      <DownloadSettings
+        :label="`Download playlist '${playlistMetadata.title}'`"
+        @download="downloadVideos"
+        :loading="downloadStarted"
       />
       <div
-        v-if="exportStarted && totalProgress > 0"
+        v-if="downloadStarted && totalProgress > 0"
         class="flex flex-col w-full justify-evenly items-center"
       >
         <p>Total Progression :</p>
-        <UProgress class="max-w-[80vw]" :model-value="totalProgress" status />
+        <progress
+          class="progress max-w-[80vw]"
+          :value="totalProgress"
+          max="100"
+        />
       </div>
     </div>
 
-    <VideoExportStatus
-      v-for="video in playlistMetadata.videos"
-      :key="video.videoId"
-      ref="videos"
-      :video="video"
-      :steps="exportSteps"
-      :force-refresh="forceRefresh"
-      @progress="updateTotalProgressBar"
-      @error="(e) => showError(e.name, e.message)"
-    />
+    <ul
+      v-if="playlistMetadata.videos.length > 0"
+      class="w-full list bg-base-100 rounded-box shadow-md"
+    >
+      <li
+        v-for="video in playlistMetadata.videos"
+        :key="video.videoId"
+        class="list-row"
+      >
+        <VideoPresenter
+          :key="video.videoId"
+          ref="videos"
+          :video="video"
+          :steps="exportSteps"
+          @progress="updateTotalProgressBar"
+          @error="(e: Error) => showError(e.name, e.message)"
+        />
+      </li>
+    </ul>
   </div>
-  <ErrorModal
+  <Modal
     :title="errorTitle"
     :description="errorDescription"
     :open="errorShow"
@@ -41,19 +54,17 @@
 </template>
 
 <script setup lang="ts">
-import Loader from "~/components/LoaderComponent.vue";
-import VideoExportStatus from "~/components/VideoExportStatus.vue";
+import VideoPresenter from "~/components/presenters/VideoPresenter.vue";
 import type { GenericAPIResponse } from "~/models/GenericAPIResponse";
 import type { WebsocketMessage } from "~/models/WebsocketMessage";
-import ExportSettings from "~/components/ExportSettings.vue";
-defineProps<{ forceRefresh: boolean }>();
+// import type { YoutubeAPIPlaylistsResponse } from "~/types/playlist-list-response";
 
-const exportStarted = ref<boolean>(false);
+const downloadStarted = ref<boolean>(false);
 const totalProgress = ref<number>(0);
 
 const playlistMetadata = ref<RefinedPlaylistMetadata | null>(null);
 
-const videos = ref<InstanceType<typeof VideoExportStatus>[]>([]);
+const videos = ref<InstanceType<typeof VideoPresenter>[]>([]);
 const exportSteps = ref<string[]>([]);
 
 const errorTitle = ref<string>("");
@@ -123,10 +134,10 @@ async function downloadExport(
   a.href = url.toString();
   a.download = `${playlistName}.zip`;
   a.click();
-  exportStarted.value = false;
+  downloadStarted.value = false;
 }
 
-async function exportVideos({
+async function downloadVideos({
   audio,
   video,
   convert,
@@ -140,7 +151,7 @@ async function exportVideos({
   exportSteps.value = ["DOWNLOAD"];
   if (convert || (audio && video)) exportSteps.value.push("CONVERT");
 
-  exportStarted.value = true;
+  downloadStarted.value = true;
 
   const response: GenericAPIResponse<{
     cachedVideos: string[];
@@ -167,6 +178,20 @@ async function exportVideos({
     },
   });
 
+  console.log({
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+    body: {
+      videoIds: playlistMetadata.value?.videos.map((video) => video.videoId),
+      audio,
+      video,
+      convert,
+      forceRefresh,
+    },
+  });
   response.data!.cachedVideos?.forEach((videoId) => {
     const video = videos.value.find((video) => video.videoId === videoId);
     video?.updateProgress(exportSteps.value.length);
@@ -231,7 +256,25 @@ async function loadPlaylist(playlistId: string, forceRefresh: boolean) {
   }
 }
 
+// TODO: Fetch videos from the Youtube Playlist API for 'unlisted' playlists when
+// using OAuth2.0 instead of URLs.
+// function loadMyPlaylist(playlist: YoutubeAPIPlaylistsResponse["items"][0]) {
+//   playlistMetadata.value = {
+//     playlistId: playlist.id,
+//     thumbnailUrl: (
+//       playlist.snippet.thumbnails.maxres ??
+//       playlist.snippet.thumbnails.high ??
+//       playlist.snippet.thumbnails.standard ??
+//       playlist.snippet.thumbnails.medium ??
+//       playlist.snippet.thumbnails.default
+//     ).url,
+//     title: playlist.snippet.title,
+//     videos: playlist.snippet.
+//   };
+// }
+
 defineExpose({
   loadPlaylist,
+  // loadMyPlaylist,
 });
 </script>
