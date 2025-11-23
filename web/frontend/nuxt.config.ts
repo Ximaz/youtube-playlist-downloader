@@ -1,4 +1,6 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
+import tailwindcss from "@tailwindcss/vite";
+
 export default defineNuxtConfig({
   devServer: {
     port: 4000,
@@ -18,5 +20,8 @@ export default defineNuxtConfig({
     experimental: {
       websocket: true,
     },
+  },
+  vite: {
+    plugins: [tailwindcss()],
   },
 });
