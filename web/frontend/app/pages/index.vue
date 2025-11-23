@@ -2,23 +2,20 @@
 <template>
   <div class="hero bg-base-200 min-h-screen">
     <div class="hero-content flex-col lg:flex-row">
-      <div>
-        <h1 class="text-5xl font-bold">
-          Download all your<br />Youtube playlists !
-        </h1>
-        <p class="py-6">
+      <div class="w-full">
+        <h1 class="text-5xl font-bold">Download any playlist</h1>
+        <p class="py-4 w-[80%]">
           Get native thumbnails, title and artists metadata, as well as built-in
           format convertion for Apple Music support !
         </p>
         <div class="flex gap-4">
           <GoogleButton />
-          <button class="btn btn-outline" @click="scrollToApp">
-            Download playlist with URL
+          <button class="btn btn-outline btn-primary" @click="scrollToApp">
+            Use an URL instead
           </button>
         </div>
       </div>
-      <div class="mockup-phone border-[#3b3b3b]">
-        <!-- <div class="mockup-phone-camera"></div> -->
+      <div class="mockup-phone w-1/2 border-[#3b3b3b]">
         <div class="mockup-phone-display">
           <img alt="wallpaper" :src="AppleMusicBackground" />
         </div>

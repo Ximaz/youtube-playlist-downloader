@@ -6,7 +6,7 @@
       <SelectConvert v-model="settings.convert" />
 
       <button
-        class="btn"
+        class="btn btn-primary"
         :disabled="props.loading"
         @click="emit('download', flattenSettings)"
       >
@@ -15,10 +15,10 @@
       </button>
     </div>
 
-    <label class="label">
+    <!-- <label class="label">
       <input type="checkbox" v-model="settings.forceRefresh" class="checkbox" />
       Force refresh
-    </label>
+    </label> -->
   </div>
 </template>
 

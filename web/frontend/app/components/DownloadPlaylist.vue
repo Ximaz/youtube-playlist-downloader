@@ -18,7 +18,7 @@
       >
         <p>Total Progression :</p>
         <progress
-          class="progress max-w-[80vw]"
+          class="progress progress-primary max-w-[80vw]"
           :value="totalProgress"
           max="100"
         />

@@ -15,7 +15,7 @@
         </div>
       </div>
 
-      <button class="btn join-item" @click="resolvePlaylist">
+      <button class="btn join-item btn-primary" @click="resolvePlaylist">
         Find the playlist
       </button>
     </div>

@@ -28,7 +28,7 @@
       "No description provided about this playlist."
     }}
   </p>
-  <button class="btn" @click="emitter('download', playlist.id)">
+  <button class="btn btn-primary" @click="emitter('download', playlist.id)">
     Download
   </button>
 </template>

@@ -15,7 +15,11 @@
     </div>
   </div>
   <p class="list-col-wrap text-xs">
-    <progress class="progress w-full" :value="progress" max="100" />
+    <progress
+      class="progress progress-primary w-full"
+      :value="progress"
+      max="100"
+    />
   </p>
 </template>
 
