@@ -1,0 +1,48 @@
+{
+  "name": "ypd",
+  "version": "0.1.0",
+  "private": true,
+  "description": "YPD — download whole YouTube playlists (providers + NestJS backend + Vue frontend)",
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "lint": "pnpm -r --if-present lint",
+    "format:check": "pnpm -r --if-present format:check",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "build": "pnpm -r --if-present build",
+    "test": "pnpm -r --if-present test",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "husky": "9.1.7",
+    "lint-staged": "16.2.7",
+    "prettier": "3.8.3"
+  },
+  "lint-staged": {
+    "apps/backend/src/**/*.ts": [
+      "prettier --write"
+    ],
+    "apps/frontend/src/**/*.{ts,vue}": [
+      "prettier --write"
+    ],
+    "apps/providers/youtubejs/src/**/*.ts": [
+      "prettier --write"
+    ],
+    "packages/shared/src/**/*.ts": [
+      "prettier --write"
+    ]
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/engines",
+      "prisma",
+      "@prisma/client",
+      "@nestjs/core",
+      "@scarf/scarf",
+      "msgpackr-extract",
+      "esbuild"
+    ]
+  }
+}

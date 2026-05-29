@@ -1,0 +1,31 @@
+[project]
+name = "provider-ytdl"
+version = "0.1.0"
+description = "YPD provider: yt-dlp HTTP server (YouTube metadata + media streaming)"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "yt-dlp==2026.3.17",
+    "fastapi==0.136.3",
+    "uvicorn[standard]==0.48.0",
+    "httpx==0.28.1",
+    "structlog==25.5.0",
+    "prometheus-client==0.22.1",
+]
+
+[dependency-groups]
+dev = ["ruff==0.15.15", "mypy==2.1.0"]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+ignore_missing_imports = true

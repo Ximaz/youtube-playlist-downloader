@@ -1,0 +1,37 @@
+// YPD — OAuth2.0 credential storage (private playlists).
+//
+// At-rest encryption: this schema stores OAuth access/refresh tokens as plaintext
+// columns. See ADR 0008 (docs/decisions/README.md): protection at rest is the database
+// volume's responsibility — LUKS / cloud-provider encrypted volume in prod. App-level
+// encryption was intentionally NOT added; the project accepts the tradeoff that a
+// pg_dump or compromised DB credential reveals raw tokens.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Opaque session: the value set in the user's httpOnly cookie. One per browser sign-in.
+model Session {
+  id        String        @id @default(uuid())
+  createdAt DateTime      @default(now())
+  account   OAuthAccount?
+}
+
+// Google OAuth2.0 tokens for the YouTube Data API (read-only scope). One per Session.
+// `googleSub` is the Google account subject id (stable across sign-ins).
+model OAuthAccount {
+  sessionId    String   @id
+  session      Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  googleSub    String
+  accessToken  String
+  refreshToken String
+  expiresAt    DateTime
+  scope        String
+  updatedAt    DateTime @updatedAt
+
+  @@index([googleSub])
+}

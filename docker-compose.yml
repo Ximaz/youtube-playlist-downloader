@@ -1,0 +1,193 @@
+# YPD — full local stack. All exposed ports bind to 127.0.0.1 only.
+# Each service reads secrets/<service>/.env; copy each .env.example -> .env before `docker compose up`.
+
+name: ypd
+
+networks:
+  network-backend:
+    driver: bridge
+
+volumes:
+  storage-data:
+  cache-data:
+  database-data:
+
+services:
+  # ------------------------------------------------------------ Storage (dev)
+  # SeaweedFS S3 gateway (maintained, S3-compatible). Prod uses a real provider.
+  # Identity is provisioned from AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY (global admin) —
+  # no JSON config file. The backend's S3 client uses the same credentials (S3_ACCESS_KEY /
+  # S3_SECRET_KEY in secrets/backend/.env). Named 'storage' to stay backend-agnostic.
+  storage:
+    image: chrislusf/seaweedfs:4.29
+    restart: unless-stopped
+    env_file:
+      - ./secrets/storage/.env
+    command:
+      - server
+      - -dir=/data
+      - -ip=storage
+      - -ip.bind=0.0.0.0
+      - -s3
+      - -s3.port=8333
+    volumes:
+      - storage-data:/data
+    ports:
+      - "127.0.0.1:8333:8333"
+      - "127.0.0.1:8888:8888" # SeaweedFS filer web UI — browse at /buckets/ypd/
+    networks:
+      - network-backend
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8333/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 45s
+
+  # ---------------------------------------------------------------- Cache
+  # Valkey: response cache + BullMQ queue + OAuth state. ACL user from .env.
+  cache:
+    image: valkey/valkey:8.1
+    restart: unless-stopped
+    env_file:
+      - ./secrets/cache/.env
+    # VALKEY_* come from the injected env (env_file), which can't feed compose ${..}
+    # interpolation — so the launch command + healthcheck read them at runtime via a
+    # shell. ($$ escapes the $ so compose passes it through to the container shell.)
+    # ACL: disable the default user (no fallback auth), grant the named user least-privilege —
+    # everything BullMQ/iovalkey actually needs, minus -@dangerous (KEYS, CONFIG, FLUSHALL,
+    # DEBUG, REPLICAOF, etc.) so a compromised provider can't enumerate sessions or wipe state.
+    # +info is re-added after -@dangerous because BullMQ/iovalkey call INFO on every
+    # connection prep to detect the server version; +client (instead of +client|setname)
+    # lets BullMQ also call CLIENT GETNAME / NO-EVICT for its worker bookkeeping.
+    command:
+      - "sh"
+      - "-c"
+      - 'exec valkey-server --user default off --user "$$VALKEY_USERNAME" on ">$$VALKEY_PASSWORD" "~*" "&*" "+@read" "+@write" "+@list" "+@stream" "+@hash" "+@set" "+@sortedset" "+@scripting" "+@connection" "+client" "-@dangerous" "+info"'
+    volumes:
+      - cache-data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    networks:
+      - network-backend
+    healthcheck:
+      test: ["CMD-SHELL", "valkey-cli -a \"$$VALKEY_PASSWORD\" --no-auth-warning ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------- Database
+  database:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    env_file:
+      - ./secrets/database/.env
+    volumes:
+      - database-data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks:
+      - network-backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # ---------------------------------------------------------------- Providers
+  provider-ytdl:
+    build:
+      context: ./apps/providers/ytdl
+    restart: unless-stopped
+    expose:
+      - "5000"
+    env_file:
+      - ./secrets/providers/.env
+    environment:
+      PORT: "5000"
+    networks:
+      - network-backend
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5000/health').status==200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
+  provider-youtubejs:
+    build:
+      context: ./apps/providers/youtubejs
+    restart: unless-stopped
+    expose:
+      - "5001"
+    env_file:
+      - ./secrets/providers/.env
+    environment:
+      PORT: "5001"
+    networks:
+      - network-backend
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:5001/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+
+  # ---------------------------------------------------------------- Backend
+  backend:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    restart: unless-stopped
+    # Backend owns its full config (incl. CACHE_URL, DATABASE_URL, S3_* client settings).
+    env_file:
+      - ./secrets/backend/.env
+    # Give NestJS shutdown hooks time to drain BullMQ workers + close Prisma/Valkey before
+    # Docker SIGKILLs. With download retries (attempts:3) a worst-case download cycle is ~25s.
+    stop_grace_period: 30s
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:${BACKEND_PORT:-3000}:3000"
+    depends_on:
+      storage:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+      database:
+        condition: service_healthy
+      provider-ytdl:
+        condition: service_healthy
+      provider-youtubejs:
+        condition: service_healthy
+    networks:
+      - network-backend
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+
+  # ---------------------------------------------------------------- Frontend
+  # Nuxt 4 SPA served by Nitro. BACKEND_URL is read at container start by a Nitro
+  # plugin (apps/frontend/server/plugins/runtime-config.ts) and injected into the
+  # client bundle via `useRuntimeConfig().public.backendUrl` — change the env var
+  # and restart; no rebuild required.
+  frontend:
+    build:
+      context: .
+      dockerfile: apps/frontend/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./secrets/frontend/.env
+    # Graceful shutdown via tini → Node receives SIGTERM and Nitro closes its
+    # listener cleanly; without this Docker SIGKILLs after the default 10s.
+    stop_grace_period: 15s
+    ports:
+      - "${BIND_HOST:-127.0.0.1}:8080:8080"
+    depends_on:
+      backend:
+        condition: service_started
+    networks:
+      - network-backend
