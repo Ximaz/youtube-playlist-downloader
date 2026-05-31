@@ -1,16 +1,12 @@
-// Nuxt 4 config — SPA mode (ssr: false) so the app runs as a static client served
-// by Nitro. Nitro is the runtime that reads `runtimeConfig.public.*` overrides at
-// server start (the whole point of the migration: env vars must be runtime, not
-// build-time).
+// Nuxt 4 config — SPA mode (ssr: false). The browser is served a static client AND
+// Nitro acts as a Backend-for-Frontend: the browser only ever talks to this origin,
+// and Nitro's server routes (server/) proxy REST + WebSocket to the backend over the
+// internal Docker network, injecting the session token. `backendUrl` is therefore
+// SERVER-ONLY runtime config — it is never shipped to the browser.
 //
-// Env var contract: the project's user-facing env var is `BACKEND_URL` (no prefix).
-//   - In dev (`nuxt dev`): read here at startup from `process.env.BACKEND_URL`.
-//   - In the production container: the Docker ENTRYPOINT exports
-//     `NUXT_PUBLIC_BACKEND_URL=$BACKEND_URL` BEFORE `node .output/server/index.mjs`
-//     runs, so Nuxt's standard runtime-override path picks it up. (Nitro freezes
-//     `runtimeConfig.public` after init, so a plugin can't mutate it — the env-var
-//     shim has to happen pre-process.)
-// In either case `NUXT_PUBLIC_BACKEND_URL` also works as a direct override.
+// Env var contract (translated by the Docker ENTRYPOINT before `node` starts):
+//   BACKEND_URL   → NUXT_BACKEND_URL    (internal backend base, e.g. http://backend:3000)
+//   COOKIE_SECURE → NUXT_COOKIE_SECURE  ('false' only for plain-http dev)
 export default defineNuxtConfig({
   compatibilityDate: '2026-05-31',
   ssr: false,
@@ -35,9 +31,10 @@ export default defineNuxtConfig({
     },
   },
   runtimeConfig: {
-    public: {
-      backendUrl: process.env.BACKEND_URL ?? 'http://localhost:3000',
-    },
+    // Server-only: the internal backend base URL the BFF proxy forwards to, and whether
+    // to mark the session cookie `Secure` (true in prod behind HTTPS; 'false' for http dev).
+    backendUrl: process.env.BACKEND_URL ?? 'http://backend:3000',
+    cookieSecure: (process.env.COOKIE_SECURE ?? 'true') !== 'false',
   },
   // Listen on 8080 inside the container to keep the existing port contract with
   // docker-compose + the user (nginx used to serve here too).

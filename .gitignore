@@ -43,3 +43,8 @@ tmp/
 
 CLAUDE.md
 .claude/
+
+# Real host config (copied from frontend.conf.example) and self-signed cert material.
+nginx/conf.d/frontend.conf
+nginx/certs/*.crt
+nginx/certs/*.key

@@ -4,14 +4,12 @@ import { randomUUID } from 'node:crypto';
 
 import { HttpAdapterHost, NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import cookieParser from 'cookie-parser';
 import type { NextFunction, Request, Response } from 'express';
 import { cleanupOpenApiDoc, ZodValidationPipe } from 'nestjs-zod';
 
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/all-exceptions.filter';
 import { AppConfigService } from './config/app-config.service';
-import { SecureIoAdapter } from './realtime/secure-io.adapter';
 
 const REQUEST_ID_HEADER = 'x-ypd-request-id';
 
@@ -24,11 +22,9 @@ async function bootstrap(): Promise<void> {
   // and dangling connections leak on every deploy.
   app.enableShutdownHooks();
 
-  app.enableCors({ origin: config.frontendOrigin, credentials: true });
-  // Pin Socket.IO CORS to the same origin and enable credentials so the browser sends the
-  // `ypd_session` cookie on the WS handshake (the gateway middleware reads it).
-  app.useWebSocketAdapter(new SecureIoAdapter(app));
-  app.use(cookieParser());
+  // No CORS / cookie middleware: the backend is a pure token API reached only over the internal
+  // Docker network by the Nuxt BFF proxy (never a browser), and auth rides the `Authorization`
+  // header. Socket.IO likewise uses the default adapter (no cross-origin handshake).
   // Adopt or mint an x-ypd-request-id so logs + downstream provider calls share a correlation
   // id. Stamped on the request object for handlers that want to forward it; echoed on the
   // response for clients/log scrapers.

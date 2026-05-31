@@ -16,17 +16,14 @@ import {
 } from '@ypd/shared';
 import { z } from 'zod';
 
-/** Backend base URL — read from Nuxt's runtime config so the env var resolves at
- *  container start, not at build time. The Docker entrypoint translates the user-
- *  facing `BACKEND_URL` env into `NUXT_PUBLIC_BACKEND_URL`, which Nuxt automatically
- *  maps onto `runtimeConfig.public.backendUrl` and injects into the SPA HTML via
- *  `window.__NUXT__.config.public.backendUrl` — so the value the browser sees
- *  reflects the CONTAINER's current env, not the build args. */
+/** All backend calls go through the same-origin Nuxt BFF under `/api`. The browser never
+ *  talks to the backend directly: Nitro proxies each request to the internal backend and
+ *  swaps the httpOnly session cookie for a Bearer token. Same origin ⇒ no CORS. */
 function backendBase(): string {
-  return useRuntimeConfig().public.backendUrl;
+  return '/api';
 }
 
-/** Sign-in page entry point — Google consent then a server-side cookie. */
+/** Sign-in entry point — the BFF route redirects to Google consent, then sets the cookie. */
 export function signInUrl(): string {
   return `${backendBase()}/auth/google`;
 }

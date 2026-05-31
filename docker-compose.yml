@@ -170,10 +170,10 @@ services:
       start_period: 30s
 
   # ---------------------------------------------------------------- Frontend
-  # Nuxt 4 SPA served by Nitro. BACKEND_URL is read at container start by a Nitro
-  # plugin (apps/frontend/server/plugins/runtime-config.ts) and injected into the
-  # client bundle via `useRuntimeConfig().public.backendUrl` — change the env var
-  # and restart; no rebuild required.
+  # Nuxt 4 SPA + Backend-for-Frontend. The browser only talks to this service; its Nitro
+  # server proxies REST (/api) + Socket.IO (/socket.io) to the backend over the internal
+  # network. BACKEND_URL is SERVER-ONLY (read at container start, never sent to the browser);
+  # COOKIE_SECURE=false here because dev is plain http on localhost.
   frontend:
     build:
       context: .

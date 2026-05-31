@@ -1,10 +1,9 @@
-import { Controller, Get, Param, ParseUUIDPipe, Req, Res } from '@nestjs/common';
+import { Controller, Get, Param, ParseUUIDPipe, Res } from '@nestjs/common';
 import { ApiProduces, ApiTags } from '@nestjs/swagger';
-import type { Request, Response } from 'express';
+import type { Response } from 'express';
 
+import { SessionId } from '../auth/session-id.decorator';
 import { ArchiveService } from './archive.service';
-
-const SESSION_COOKIE = 'ypd_session';
 
 @ApiTags('downloads')
 @Controller('downloads')
@@ -15,10 +14,9 @@ export class ArchiveController {
   @ApiProduces('application/zip')
   async download(
     @Param('batchId', new ParseUUIDPipe({ version: '4' })) batchId: string,
-    @Req() req: Request,
     @Res() res: Response,
+    @SessionId() sessionId?: string,
   ): Promise<void> {
-    const sessionId = req.cookies?.[SESSION_COOKIE] as string | undefined;
     await this.archive.stream(batchId, sessionId, res);
   }
 }

@@ -1,14 +1,16 @@
 #!/bin/sh
-# Bridge the user-facing BACKEND_URL env var → Nuxt's NUXT_PUBLIC_BACKEND_URL.
+# Bridge the user-facing env vars → Nuxt's SERVER-side runtime config keys, BEFORE Node
+# starts. Nuxt overrides runtimeConfig from `NUXT_<KEY>` env vars only, so we translate the
+# friendly names here.
 #
-# Why this exists: Nuxt's runtime config is overridable from env vars only via the
-# `NUXT_<KEY>_<KEY>...` naming convention, and the public section is frozen by Nitro
-# after init (so a Nitro plugin can't patch it). To present `BACKEND_URL` (no prefix)
-# as the single env var that consumers set, we translate it here, BEFORE Node starts.
+#   BACKEND_URL   → NUXT_BACKEND_URL    (internal backend base; the BFF proxies here)
+#   COOKIE_SECURE → NUXT_COOKIE_SECURE  ('false' only for plain-http dev)
 #
-# Precedence: BACKEND_URL → NUXT_PUBLIC_BACKEND_URL → http://localhost:3000.
+# backendUrl is server-only now (the browser never sees it): the Nitro server is the sole
+# caller of the backend. Precedence: BACKEND_URL → NUXT_BACKEND_URL → http://backend:3000.
 set -e
 
-export NUXT_PUBLIC_BACKEND_URL="${BACKEND_URL:-${NUXT_PUBLIC_BACKEND_URL:-http://localhost:3000}}"
+export NUXT_BACKEND_URL="${BACKEND_URL:-${NUXT_BACKEND_URL:-http://backend:3000}}"
+export NUXT_COOKIE_SECURE="${COOKIE_SECURE:-${NUXT_COOKIE_SECURE:-true}}"
 
 exec node .output/server/index.mjs

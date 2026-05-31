@@ -17,12 +17,9 @@ import { CONVERT_QUEUE, DOWNLOAD_QUEUE } from '../jobs/job.types';
 import { parseRedisUrl } from '../jobs/redis-connection';
 import { PrismaService } from '../prisma/prisma.service';
 
-const SESSION_COOKIE = 'ypd_session';
-
 /**
- * Decorator has NO `cors:` option — origin + credentials are pinned by SecureIoAdapter (see
- * apps/backend/src/realtime/secure-io.adapter.ts) so the typed AppConfigService is the only
- * source of truth for the allowed origin.
+ * No `cors:` option needed — the backend is reached only over the internal Docker network
+ * by the Nuxt BFF proxy, never by a browser directly, so there is no cross-origin handshake.
  */
 @WebSocketGateway()
 export class RealtimeGateway implements OnModuleInit, OnModuleDestroy {
@@ -39,12 +36,14 @@ export class RealtimeGateway implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit(): void {
-    // Cookie-based auth on the handshake: only clients carrying a valid `ypd_session`
-    // (issued by AuthController.googleCallback) can connect. Unauthenticated handshakes
-    // are rejected before any `subscribe` message is processed.
+    // Token auth on the handshake: only clients carrying a valid session token can connect.
+    // The Nuxt BFF proxy resolves its httpOnly cookie to the backend session token and injects
+    // it as `Authorization: Bearer <token>` on the upstream handshake (it also accepts the
+    // socket.io `auth.token` field). Unauthenticated handshakes are rejected before any
+    // `subscribe` message is processed.
     this.server.use(async (socket, next) => {
       try {
-        const sessionId = parseSessionCookie(socket.handshake.headers.cookie);
+        const sessionId = handshakeToken(socket);
         if (!sessionId) return next(new Error('unauthorized'));
         const exists = await this.prisma.session.findUnique({
           where: { id: sessionId },
@@ -145,12 +144,14 @@ export class RealtimeGateway implements OnModuleInit, OnModuleDestroy {
   }
 }
 
-/** Extracts `ypd_session=...` from a raw Cookie header. Returns undefined when absent. */
-function parseSessionCookie(header: string | undefined): string | undefined {
-  if (!header) return undefined;
-  for (const pair of header.split(';')) {
-    const [name, ...rest] = pair.trim().split('=');
-    if (name === SESSION_COOKIE) return decodeURIComponent(rest.join('='));
+/** Pulls the session token from the handshake: `Authorization: Bearer <token>` (injected by
+ *  the Nuxt proxy) or the socket.io `auth.token` field. Returns undefined when absent. */
+function handshakeToken(socket: Socket): string | undefined {
+  const header = socket.handshake.headers.authorization;
+  if (header) {
+    const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+    if (match?.[1]) return match[1];
   }
-  return undefined;
+  const authToken = (socket.handshake.auth as { token?: unknown } | undefined)?.token;
+  return typeof authToken === 'string' && authToken ? authToken : undefined;
 }

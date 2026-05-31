@@ -94,7 +94,9 @@ export default (): AppConfig => {
     google: {
       clientId: process.env.GOOGLE_CLIENT_ID ?? '',
       clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? '',
-      redirectUri: process.env.GOOGLE_REDIRECT_URI ?? 'http://localhost:3000/auth/google/callback',
+      // The OAuth callback lands on the frontend BFF (/api/auth/google/callback), not the backend.
+      redirectUri:
+        process.env.GOOGLE_REDIRECT_URI ?? 'http://localhost:8080/api/auth/google/callback',
     },
   };
 };

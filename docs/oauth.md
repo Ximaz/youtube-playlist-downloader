@@ -3,7 +3,9 @@
 > Status: **implemented**. End-to-end Google sign-in (with PKCE), private playlist picker, and
 > session-scoped batches are live. The flow needs real `GOOGLE_CLIENT_ID` /
 > `GOOGLE_CLIENT_SECRET` values in [secrets/backend/.env](../secrets/backend/.env); without
-> them, `/auth/google` throws at the first `OAuth2Client` instantiation.
+> them, the `/auth/google/url` exchange throws at the first `OAuth2Client` instantiation. The
+> `GOOGLE_REDIRECT_URI` must point at the **frontend** BFF callback
+> (`…/api/auth/google/callback`) and be registered in the Google Cloud Console.
 
 ## Goal
 
@@ -16,31 +18,45 @@ playable (public/unlisted) ones.
 YPD is **not** an account system. OAuth here is a token broker: it obtains a Google token bound to a
 YouTube user purely to read their playlists.
 
+## Architecture: Backend-for-Frontend (BFF)
+
+The browser only ever talks to the **Nuxt** origin. The backend is a pure **token API** (no
+cookies, no CORS) reached only by the Nuxt Nitro server over the internal Docker network. Nuxt
+owns the browser's httpOnly cookie — whose value **is** the opaque backend session token — and
+forwards it to the backend as `Authorization: Bearer <token>`. So the OAuth `state` cookie and
+the session cookie are set by **Nuxt**, while the backend keeps only the Google-facing logic
+(PKCE, token exchange/refresh, persistence).
+
 ## Flow
 
-1. `GET /auth/google` — generate a random `state` + RFC 7636 PKCE `codeVerifier`, store
-   `{ codeVerifier }` in Valkey under `oauth:state:{state}` (10-min TTL), set the `state` as a
-   short-lived httpOnly `ypd_oauth_state` cookie scoped to `/auth`, then redirect to Google's
-   consent screen with scope `openid` + `https://www.googleapis.com/auth/youtube.readonly` and a
-   SHA-256 `code_challenge`.
-2. `GET /auth/google/callback?code=…&state=…` — require the **cookie** to match the **query**
-   `state` (login-CSRF guard), load the stored `codeVerifier`, exchange `code` + verifier for
-   tokens, persist them in Postgres keyed by an opaque session id, clear the `oauth_state`
-   cookie, set the `ypd_session` cookie, redirect back to the frontend.
-3. `GET /auth/playlists` (summaries) / `GET /auth/playlists/:id` (details) — using the stored
-   access token (refreshing via the refresh token when within 60s of expiry), call the YouTube
-   Data API `playlists.list?mine=true` / `playlistItems.list` and **filter items to
-   `privacyStatus` public/unlisted** (private videos can't be streamed without auth at the
+1. `GET /api/auth/google` (Nuxt) — calls the backend `GET /auth/google/url`, which generates a
+   random `state` + RFC 7636 PKCE `codeVerifier`, stores `{ codeVerifier }` in Valkey under
+   `oauth:state:{state}` (10-min TTL), and returns the Google consent URL (scope `openid profile`
+   + `youtube.readonly`, SHA-256 `code_challenge`). Nuxt pins `state` as a short-lived httpOnly
+   `ypd_oauth_state` cookie and redirects the browser to Google.
+2. `GET /api/auth/google/callback?code=…&state=…` (Nuxt) — Google redirects here. Nuxt requires
+   the **cookie** to match the **query** `state` (login-CSRF guard), then calls the backend
+   `POST /auth/google/exchange { code, state }`, which loads + **single-use consumes** the stored
+   `codeVerifier`, exchanges `code` + verifier for tokens, persists them in Postgres keyed by an
+   opaque session id, and returns `{ token }`. Nuxt stores `token` in the httpOnly `ypd_session`
+   cookie, clears the state cookie, and redirects to the app.
+3. `GET /api/auth/playlists` (summaries) / `GET /api/auth/playlists/:id` (details) — Nuxt proxies
+   to the backend with the Bearer token; the backend uses the stored access token (refreshing via
+   the refresh token when within 60s of expiry) to call the YouTube Data API and **filter items
+   to `privacyStatus` public/unlisted** (private videos can't be streamed without auth at the
    download layer, so they're dropped at this seam).
 
-The summaries call is cached per session in Valkey (5-min TTL); per-playlist detail calls are
-cached per (sessionId, playlistId). `POST /auth/sign-out` clears all cached entries for the
-session via a SCAN over `oauth:playlist:{sessionId}:*` (never `KEYS` — see
-[ADR 0011](decisions/README.md#0011--scan-not-keys-for-per-session-cache-invalidation)).
+The single-use Valkey verifier (consumed in `completeGoogleSignIn`) is the anti-replay guard; the
+`state`-vs-cookie comparison is now enforced in the Nuxt callback before the exchange call.
 
-The frontend's "Sign in with Google" link points at `/auth/google`; after the callback the
-picker section in `App.vue` lists the user's playlists and feeds a chosen one into the normal
-download flow.
+The summaries call is cached per session in Valkey (5-min TTL); per-playlist detail calls are
+cached per (sessionId, playlistId). `POST /api/auth/sign-out` proxies to the backend (which drops
+the session + caches via a SCAN over `oauth:playlist:{sessionId}:*`, never `KEYS` — see
+[ADR 0011](decisions/README.md#0011--scan-not-keys-for-per-session-cache-invalidation)) and then
+deletes the `ypd_session` cookie.
+
+The frontend's "Sign in with Google" link points at `/api/auth/google`; after the callback the
+picker section lists the user's playlists and feeds a chosen one into the normal download flow.
 
 ## Storage (Prisma + Postgres)
 
@@ -85,10 +101,11 @@ tokens — mitigated by least-privilege roles + TLS to Postgres + an encrypted v
   not `AuthService` — same boundary discipline as `ProviderClientService`. Every response is
   Zod-validated at the seam so an unexpected Google response shape fails loud with a clear
   contract-violation log instead of silently flowing into the rest of the app.
-- Cookie naming, flag derivation, and `clearCookie` paths are owned by
-  **`SessionCookieService`**; controllers receive `sessionId` via a `@SessionId()` param
-  decorator and never touch `req.cookies` directly. This keeps `AuthController` handlers thin
-  (the project's standing convention).
+- Cookies are owned entirely by the **Nuxt BFF** ([apps/frontend/server/](../apps/frontend/server/)):
+  the auth routes set/clear `ypd_oauth_state` + `ypd_session`, and the catch-all proxy +
+  socket-proxy plugin swap the cookie for a Bearer header upstream. The backend is cookie-free;
+  controllers receive `sessionId` via a `@SessionId()` param decorator that reads the
+  `Authorization: Bearer <token>` header, keeping `AuthController` handlers thin.
 - **Refresh resilience**: `#getValidAccessToken` distinguishes Google's `invalid_grant` /
   `invalid_token` / `unauthorized_client` (permanent — drop the session, force re-auth) from
   transient 5xx / network failures (surface 503; keep the session intact). A per-session Valkey
@@ -100,10 +117,12 @@ tokens — mitigated by least-privilege roles + TLS to Postgres + an encrypted v
 
 ### WebSocket auth
 
-The Socket.IO gateway uses a custom **`SecureIoAdapter`**
-([apps/backend/src/realtime/secure-io.adapter.ts](../apps/backend/src/realtime/secure-io.adapter.ts))
-that pins CORS to `AppConfigService.frontendOrigin` with `credentials: true` (so the browser
-sends `ypd_session` on the WS handshake). Inside the gateway, `server.use(...)` rejects any
-handshake whose `ypd_session` cookie doesn't resolve to a `Session` row in Postgres. The
-`subscribe` payload is validated with the same `WorkSelectorSchema` the REST resync endpoint
-uses, so the WS contract has no second source of truth.
+The browser opens Socket.IO against its own origin (`/socket.io`); the Nuxt BFF proxies the
+handshake — HTTP polling via [server/routes/socket.io/[...].ts](../apps/frontend/server/routes/socket.io/),
+the WebSocket `upgrade` via [server/plugins/socket-proxy.ts](../apps/frontend/server/plugins/socket-proxy.ts) —
+injecting `Authorization: Bearer <token>` (from the `ypd_session` cookie) onto the upstream
+handshake and stripping the cookie. Inside the gateway, `server.use(...)` reads that Bearer token
+and rejects any handshake whose token doesn't resolve to a `Session` row in Postgres (no
+`SecureIoAdapter`/CORS — the handshake is same-network, never cross-origin). The `subscribe`
+payload is validated with the same `WorkSelectorSchema` the REST resync endpoint uses, so the WS
+contract has no second source of truth.

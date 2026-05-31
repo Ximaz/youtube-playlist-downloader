@@ -19,8 +19,8 @@ COPY packages/shared packages/shared
 COPY apps/frontend apps/frontend
 # Build the shared package first (Nuxt's typecheck reads its compiled types), then
 # the Nuxt app. The Nuxt build emits `.output/` (Nitro server + client bundle).
-# No browser-facing URL is baked here: backendUrl is read at container start from
-# the BACKEND_URL env var (see server/plugins/runtime-config.ts).
+# No browser-facing URL is baked here: backendUrl is server-only and read at container
+# start from the BACKEND_URL env var (the Nitro BFF is the sole caller of the backend).
 RUN pnpm --filter @ypd/shared build && pnpm --filter @ypd/frontend build
 
 # Runtime: bare Node, runs Nuxt's Nitro server which serves the SPA + injects the
@@ -44,9 +44,9 @@ EXPOSE 8080
 
 # tini as PID 1 so SIGTERM from `docker stop` reaches Node and Nitro can shut its
 # HTTP server down cleanly. The entrypoint script translates the user-facing
-# BACKEND_URL env into NUXT_PUBLIC_BACKEND_URL before exec'ing node, because
-# Nitro freezes the runtime config after init — env-var translation must happen
-# in the parent process.
+# BACKEND_URL / COOKIE_SECURE envs into NUXT_BACKEND_URL / NUXT_COOKIE_SECURE before
+# exec'ing node, because Nitro freezes the runtime config after init — env-var
+# translation must happen in the parent process.
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/ypd-frontend-entrypoint"]
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \

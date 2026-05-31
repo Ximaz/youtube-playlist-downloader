@@ -1,59 +1,51 @@
 import {
-  BadRequestException,
+  Body,
   Controller,
   Get,
+  HttpCode,
   Param,
   Post,
-  Query,
-  Req,
-  Res,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { AuthMe, OAuthPlaylist, OAuthPlaylistSummary } from '@ypd/shared';
 import { PlaylistIdSchema } from '@ypd/shared';
-import type { Request, Response } from 'express';
 import { ZodValidationPipe } from 'nestjs-zod';
 
-import { AppConfigService } from '../config/app-config.service';
 import { AuthService } from './auth.service';
+import { GoogleExchangeDto } from './dto/google-exchange.dto';
 import { SessionId } from './session-id.decorator';
-import { OAUTH_STATE_COOKIE, SessionCookieService } from './session-cookie.service';
 
+/**
+ * Pure token API — no cookies, no browser redirects. The Nuxt BFF owns the browser-facing
+ * OAuth dance (state cookie + redirects); these endpoints are called server-to-server:
+ * `GET /auth/google/url` hands Nuxt the consent URL, `POST /auth/google/exchange` swaps the
+ * code for a session token. Everything else authenticates via `Authorization: Bearer <token>`.
+ */
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
-  constructor(
-    private readonly auth: AuthService,
-    private readonly cookies: SessionCookieService,
-    private readonly config: AppConfigService,
-  ) {}
+  constructor(private readonly auth: AuthService) {}
 
-  @Get('google')
-  @ApiOperation({ summary: 'Redirect to Google consent for YouTube read-only access.' })
-  async startGoogle(@Res() res: Response): Promise<void> {
-    const { url, state } = await this.auth.startGoogleSignIn();
-    this.cookies.setOAuthState(res, state);
-    res.redirect(302, url);
-  }
-
-  @Get('google/callback')
+  @Get('google/url')
   @ApiOperation({
     summary:
-      'Google redirects here with code+state; verifies the oauth_state cookie, sets ypd_session, and bounces to the frontend.',
+      'Build the Google consent URL + CSRF state (PKCE verifier stored server-side). The Nuxt BFF pins `state` as an httpOnly cookie and redirects the browser to `url`.',
   })
-  async googleCallback(
-    @Query('code') code: string | undefined,
-    @Query('state') state: string | undefined,
-    @Req() req: Request,
-    @Res() res: Response,
-  ): Promise<void> {
-    if (!code || !state) throw new BadRequestException('Missing code or state.');
-    const cookieState = req.cookies?.[OAUTH_STATE_COOKIE] as string | undefined;
-    const { sessionId } = await this.auth.completeGoogleSignIn(code, state, cookieState);
-    this.cookies.clearOAuthState(res);
-    this.cookies.setSession(res, sessionId);
-    res.redirect(302, this.config.frontendOrigin);
+  async googleUrl(): Promise<{ url: string; state: string }> {
+    return this.auth.startGoogleSignIn();
+  }
+
+  @Post('google/exchange')
+  @ApiOperation({
+    summary:
+      'Exchange the OAuth `code` (after Nuxt has verified `state` against its cookie) for a session token. Returns the opaque token the BFF stores in its httpOnly cookie.',
+  })
+  async googleExchange(@Body() body: GoogleExchangeDto): Promise<{ token: string }> {
+    // Nuxt has already validated `state` against its httpOnly cookie; the single-use Valkey
+    // verifier (consumed inside completeGoogleSignIn) remains the anti-replay guard.
+    const { sessionId } = await this.auth.completeGoogleSignIn(body.code, body.state, body.state);
+    return { token: sessionId };
   }
 
   @Get('me')
@@ -88,11 +80,12 @@ export class AuthController {
   }
 
   @Post('sign-out')
-  @ApiOperation({ summary: 'Clear the session cookie and drop the row + cascaded OAuth account.' })
-  async signOut(@SessionId() sessionId: string | undefined, @Res() res: Response): Promise<void> {
+  @HttpCode(204)
+  @ApiOperation({
+    summary: 'Drop the session row + cascaded OAuth account. The BFF clears its cookie.',
+  })
+  async signOut(@SessionId() sessionId?: string): Promise<void> {
     if (sessionId) await this.auth.signOut(sessionId);
-    this.cookies.clearSession(res);
-    res.status(204).send();
   }
 
   #require(sessionId: string | undefined): string {

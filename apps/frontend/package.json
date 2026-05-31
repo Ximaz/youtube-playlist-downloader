@@ -13,6 +13,7 @@
   "dependencies": {
     "@nuxt/ui": "4.8.1",
     "@ypd/shared": "workspace:*",
+    "httpxy": "0.5.3",
     "nuxt": "4.4.6",
     "socket.io-client": "4.8.3",
     "tailwindcss": "4.3.0",
