@@ -117,11 +117,11 @@ tokens — mitigated by least-privilege roles + TLS to Postgres + an encrypted v
 
 ### WebSocket auth
 
-The browser opens Socket.IO against its own origin (`/socket.io`); the Nuxt BFF proxies the
-handshake — HTTP polling via [server/routes/socket.io/[...].ts](../apps/frontend/server/routes/socket.io/),
-the WebSocket `upgrade` via [server/plugins/socket-proxy.ts](../apps/frontend/server/plugins/socket-proxy.ts) —
-injecting `Authorization: Bearer <token>` (from the `ypd_session` cookie) onto the upstream
-handshake and stripping the cookie. Inside the gateway, `server.use(...)` reads that Bearer token
+The browser opens Socket.IO against its own origin (`/socket.io`); a single Nuxt BFF middleware
+([server/middleware/socketio.ts](../apps/frontend/server/middleware/socketio.ts)) proxies both the
+HTTP polling transport (via h3 `proxyRequest`) and the WebSocket `upgrade` (via `httpxy`, bound on
+the underlying http.Server), injecting `Authorization: Bearer <token>` (from the `ypd_session`
+cookie) onto the upstream handshake and stripping the cookie. Inside the gateway, `server.use(...)` reads that Bearer token
 and rejects any handshake whose token doesn't resolve to a `Session` row in Postgres (no
 `SecureIoAdapter`/CORS — the handshake is same-network, never cross-origin). The `subscribe`
 payload is validated with the same `WorkSelectorSchema` the REST resync endpoint uses, so the WS

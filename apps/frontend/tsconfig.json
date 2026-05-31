@@ -1,3 +1,13 @@
 {
-  "extends": "./.nuxt/tsconfig.json"
+  // Nuxt 4 solution-style config: each generated sub-project owns its own files (app = Vue
+  // client, server = Nitro/Node, shared, node = config). The editor's TS server routes every
+  // file to the right project, so `server/**` gets Node + Nitro types (fixes "Cannot find
+  // name 'node:http'"). This mirrors what `nuxt typecheck` builds.
+  "files": [],
+  "references": [
+    { "path": "./.nuxt/tsconfig.app.json" },
+    { "path": "./.nuxt/tsconfig.server.json" },
+    { "path": "./.nuxt/tsconfig.shared.json" },
+    { "path": "./.nuxt/tsconfig.node.json" }
+  ]
 }

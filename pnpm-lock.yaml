@@ -172,6 +172,9 @@ importers:
       '@nuxt/cli':
         specifier: 3.35.2
         version: 3.35.2(@nuxt/schema@4.4.6)(cac@6.7.14)(magicast@0.5.3)
+      '@types/node':
+        specifier: 24.12.4
+        version: 24.12.4
       prettier:
         specifier: 3.8.3
         version: 3.8.3
