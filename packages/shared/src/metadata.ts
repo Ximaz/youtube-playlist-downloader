@@ -61,6 +61,10 @@ export const PlaylistMetadataSchema = z
     title: z.string().optional(),
     author: z.string().optional(),
     videoIds: z.array(z.string()),
+    /** videoId → title for the videos whose title is known at list time. Providers carry it
+     *  for free from their flat playlist extraction; the UI seeds queue-row labels from it so
+     *  titles show immediately instead of raw ids (missing entries fall back to the id). */
+    videoTitles: z.record(z.string(), z.string()).optional(),
   })
   .strict();
 export type PlaylistMetadata = z.infer<typeof PlaylistMetadataSchema>;

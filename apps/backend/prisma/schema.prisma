@@ -31,6 +31,11 @@ model OAuthAccount {
   refreshToken String
   expiresAt    DateTime
   scope        String
+  // OpenID profile captured from the id_token at sign-in (the `profile` scope). Lets the
+  // navbar show the real account without a separate Google userinfo call. Nullable so
+  // sessions created before the `profile` scope, or accounts with no picture, still work.
+  name         String?
+  picture      String?
   updatedAt    DateTime @updatedAt
 
   @@index([googleSub])

@@ -7,7 +7,7 @@ import {
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
-import type { OAuthPlaylist, OAuthPlaylistSummary } from '@ypd/shared';
+import type { AuthMe, OAuthPlaylist, OAuthPlaylistSummary } from '@ypd/shared';
 import { CodeChallengeMethod, OAuth2Client } from 'google-auth-library';
 
 import { CacheService } from '../cache/cache.service';
@@ -20,6 +20,10 @@ const YOUTUBE_READONLY_SCOPE = 'https://www.googleapis.com/auth/youtube.readonly
 /** OIDC scope — required so Google returns an `id_token` we can verify to extract the
  * user's stable Google subject id (`sub`). Pure OAuth2 scopes don't trigger an id_token. */
 const OPENID_SCOPE = 'openid';
+/** OIDC `profile` scope — adds the `name` + `picture` claims to the id_token so we can show
+ * the real account in the navbar without a separate Google userinfo call. Adding it means
+ * existing sessions (granted before this scope) must sign in again to populate the profile. */
+const PROFILE_SCOPE = 'profile';
 const STATE_PREFIX = 'oauth:state:';
 const STATE_TTL_SECONDS = 600; // 10 min — covers a normal consent screen.
 /** Refresh the access token if it expires within this window of `now`. */
@@ -57,7 +61,7 @@ export class AuthService {
     const url = client.generateAuthUrl({
       access_type: 'offline', // ensures we get a refresh_token
       prompt: 'consent', // forces refresh_token even on repeat sign-in
-      scope: [OPENID_SCOPE, YOUTUBE_READONLY_SCOPE],
+      scope: [OPENID_SCOPE, PROFILE_SCOPE, YOUTUBE_READONLY_SCOPE],
       state,
       include_granted_scopes: true,
       code_challenge: codeChallenge,
@@ -100,7 +104,8 @@ export class AuthService {
       idToken: tokens.id_token,
       audience: this.config.google.clientId,
     });
-    const googleSub = ticket.getPayload()?.sub;
+    const payload = ticket.getPayload();
+    const googleSub = payload?.sub;
     if (!googleSub) throw new BadRequestException('Google id_token has no subject.');
 
     const session = await this.prisma.session.create({ data: {} });
@@ -112,6 +117,9 @@ export class AuthService {
         refreshToken: tokens.refresh_token,
         expiresAt: new Date(tokens.expiry_date),
         scope: tokens.scope ?? YOUTUBE_READONLY_SCOPE,
+        // Profile claims from the verified id_token (present when the `profile` scope is granted).
+        name: payload?.name ?? null,
+        picture: payload?.picture ?? null,
       },
     });
     return { sessionId: session.id };
@@ -132,14 +140,20 @@ export class AuthService {
     ]);
   }
 
-  /** Cheap session check: does the cookie correspond to an account with stored tokens?
-   * Returns false for unknown / signed-out sessions — never throws. */
-  async hasSession(sessionId: string): Promise<boolean> {
+  /** Cheap signed-in check + profile for the navbar. Returns `{ signedIn: false }` for unknown
+   * / signed-out sessions — never throws, never touches the YouTube Data API. `name`/`picture`
+   * come straight from the row populated at sign-in (no Google round-trip). */
+  async getMe(sessionId: string): Promise<AuthMe> {
     const account = await this.prisma.oAuthAccount.findUnique({
       where: { sessionId },
-      select: { sessionId: true },
+      select: { name: true, picture: true },
     });
-    return account !== null;
+    if (!account) return { signedIn: false };
+    return {
+      signedIn: true,
+      ...(account.name ? { name: account.name } : {}),
+      ...(account.picture ? { picture: account.picture } : {}),
+    };
   }
 
   /**
@@ -175,11 +189,21 @@ export class AuthService {
     if (cached) return cached;
 
     const accessToken = await this.#getValidAccessToken(sessionId);
-    const [title, videoIds] = await Promise.all([
+    const [title, videos] = await Promise.all([
       this.youtube.getPlaylistTitle(accessToken, playlistId),
-      this.youtube.listPlaylistVideoIds(accessToken, playlistId),
+      this.youtube.listPlaylistVideos(accessToken, playlistId),
     ]);
-    const result: OAuthPlaylist = { id: playlistId, ...(title ? { title } : {}), videoIds };
+    // playlistItems.snippet carries each item's title for free in the same call, so the UI can
+    // label queue rows immediately. Order comes from `videoIds`; `videoTitles` is the id→title map.
+    const videoIds = videos.map((v) => v.id);
+    const videoTitles: Record<string, string> = {};
+    for (const v of videos) if (v.title) videoTitles[v.id] = v.title;
+    const result: OAuthPlaylist = {
+      id: playlistId,
+      ...(title ? { title } : {}),
+      videoIds,
+      ...(Object.keys(videoTitles).length ? { videoTitles } : {}),
+    };
     await this.cache.setJson(cacheKey, result, PLAYLIST_CACHE_TTL_SECONDS);
     return result;
   }

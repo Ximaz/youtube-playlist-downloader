@@ -94,16 +94,29 @@ export class DownloadProcessor extends WorkerHost implements OnModuleInit {
       // Two distinct failure modes:
       // - NotFoundException → every provider returned VIDEO_NOT_FOUND / FORMAT_NOT_FOUND.
       //   Genuinely missing upstream — terminal, mark unavailable, do NOT retry.
-      // - ProvidersUnavailableError / anything else → transport-level (timeout/5xx/network).
-      //   Retryable; surface as 'failed' so BullMQ's attempts kick in.
+      // - ProvidersUnavailableError / anything else (e.g. undici 'terminated' from a throttled
+      //   stream) → transport-level. Retryable.
       const unavailable =
         err instanceof NotFoundException || (err as { status?: number })?.status === 404;
+
+      // Transient failures must THROW for BullMQ's configured attempts/backoff to engage —
+      // returning a result (as this handler used to) marks the job succeeded and silently
+      // defeats the retry. Persist a terminal 'failed' only once the attempts are exhausted.
+      // (BullMQ 5 retries while `attemptsMade + 1 < attempts`; attemptsMade is 0-based here.)
+      const attempts = job.opts.attempts ?? 1;
+      if (!unavailable && attempts > job.attemptsMade + 1) {
+        this.logger.warn(
+          `video ${videoId} download failed (attempt ${job.attemptsMade + 1}/${attempts}), retrying: ${error}`,
+        );
+        throw err instanceof Error ? err : new Error(error);
+      }
+
       if (err instanceof ProvidersUnavailableError) {
         this.logger.warn(`video ${videoId} download deferred (providers down): ${error}`);
       } else if (unavailable) {
         this.logger.warn(`video ${videoId} became unavailable while downloading: ${error}`);
       } else {
-        this.logger.error(`video ${videoId} download failed: ${error}`);
+        this.logger.error(`video ${videoId} download failed after ${attempts} attempts: ${error}`);
       }
       const result: WorkResult = {
         videoId,

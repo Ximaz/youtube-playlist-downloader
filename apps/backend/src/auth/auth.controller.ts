@@ -58,11 +58,12 @@ export class AuthController {
 
   @Get('me')
   @ApiOperation({
-    summary: 'Lightweight signed-in check; 200 always. Does not touch the YouTube Data API.',
+    summary:
+      'Signed-in check + OpenID profile (name/picture) for the navbar; 200 always. Does not touch the YouTube Data API.',
   })
   async me(@SessionId() sessionId?: string): Promise<AuthMe> {
     if (!sessionId) return { signedIn: false };
-    return { signedIn: await this.auth.hasSession(sessionId) };
+    return this.auth.getMe(sessionId);
   }
 
   @Get('playlists')

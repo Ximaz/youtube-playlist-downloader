@@ -31,16 +31,31 @@ export type OAuthPlaylistSummary = z.infer<typeof OAuthPlaylistSummarySchema>;
 
 /** GET /auth/playlists/:id — one playlist's playable (public + unlisted) videos,
  * filtered server-side. The shape mirrors PlaylistMetadata so the frontend can
- * assign it directly into the existing download flow. */
+ * assign it directly into the existing download flow.
+ *
+ * `videoTitles` maps videoId → title for the videos whose title is known at list time
+ * (carried free from the Data API's playlistItems.snippet). The UI seeds each queue row's
+ * label from it so titles show immediately instead of raw ids; absent entries fall back to
+ * the id and get backfilled by the live `video:progress` events. */
 export const OAuthPlaylistSchema = z
   .object({
     id: z.string(),
     title: z.string().optional(),
     videoIds: z.array(z.string()),
+    videoTitles: z.record(z.string(), z.string()).optional(),
   })
   .strict();
 export type OAuthPlaylist = z.infer<typeof OAuthPlaylistSchema>;
 
-/** GET /auth/me response — cheap signed-in check that doesn't touch the YouTube API. */
-export const AuthMeSchema = z.object({ signedIn: z.boolean() }).strict();
+/** GET /auth/me response — cheap signed-in check that doesn't touch the YouTube API.
+ * `name`/`picture` come from the OpenID id_token captured at sign-in (the `profile` scope),
+ * so the navbar can show the real account without a separate Google userinfo call. Both are
+ * optional: a session predating the `profile` scope, or an account with no picture, omits them. */
+export const AuthMeSchema = z
+  .object({
+    signedIn: z.boolean(),
+    name: z.string().optional(),
+    picture: z.url().optional(),
+  })
+  .strict();
 export type AuthMe = z.infer<typeof AuthMeSchema>;

@@ -209,6 +209,13 @@
           "items": {
             "type": "string"
           }
+        },
+        "videoTitles": {
+          "description": "Optional videoId -> title map, carried free from flat playlist extraction so consumers can label rows without a per-video metadata fetch. May omit ids whose title is unknown.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       },
       "required": [

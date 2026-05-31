@@ -72,6 +72,7 @@ class _TTLCache:
             self._data.pop(next(iter(self._data)))
         self._data[key] = (time.monotonic() + self._ttl, value)
 
+
 Format = dict[str, Any]
 Info = dict[str, Any]
 
@@ -88,6 +89,11 @@ _CONTENT_TYPE = {
 _SEGMENT_SIZE = max(1, int(os.environ.get("STREAM_SEGMENT_SIZE", str(1024 * 1024))))
 _SEGMENT_CONCURRENCY = max(1, int(os.environ.get("STREAM_SEGMENT_CONCURRENCY", "4")))
 _MIN_PARALLEL_SIZE = _SEGMENT_SIZE * 2
+# A single range can still get a transient throttle/RST/timeout from googlevideo. Without a
+# retry one bad segment kills the whole download (the backend then sees undici 'terminated').
+# Retry the segment a couple of times with exponential backoff before giving up. Tunable.
+_SEGMENT_RETRIES = max(0, int(os.environ.get("STREAM_SEGMENT_RETRIES", "2")))
+_SEGMENT_RETRY_BACKOFF = max(0.0, float(os.environ.get("STREAM_SEGMENT_RETRY_BACKOFF", "0.5")))
 
 # Substrings in yt-dlp errors that mean "gone", not "broken".
 _NOT_FOUND_HINTS = (
@@ -159,13 +165,17 @@ class YoutubeService:
             info = await self._extract_cached(_playlist_url(playlist_id), {"extract_flat": True})
         except DownloadError as exc:
             raise self._classify(exc, "PLAYLIST_NOT_FOUND") from exc
-        entries = info.get("entries") or []
-        video_ids = [e.get("id") for e in entries if e and e.get("id")]
+        entries = [e for e in (info.get("entries") or []) if e and e.get("id")]
+        # flat extraction carries each entry's title for free — surface it as an id->title map
+        # so the backend/UI can label rows immediately instead of showing raw video ids.
+        video_titles = {e["id"]: e["title"] for e in entries if e.get("title")}
         dto: dict[str, Any] = {
             "id": info.get("id") or playlist_id,
             "title": info.get("title"),
-            "videoIds": [vid for vid in video_ids if vid],
+            "videoIds": [e["id"] for e in entries],
         }
+        if video_titles:
+            dto["videoTitles"] = video_titles
         author = info.get("uploader") or info.get("channel")
         if author:
             dto["author"] = author
@@ -274,16 +284,38 @@ class YoutubeService:
     # --- parallel ranged download ----------------------------------------------------------
 
     async def _stream_full(self, fmt: Format, kind: str) -> StreamingResponse:
-        """Full download: parallelize across byte ranges ONLY when the EXACT size is known.
+        """Full download: parallelize across byte ranges to defeat YouTube's throttle.
 
-        `filesize_approx` is yt-dlp's bitrate*duration estimate — over-estimate causes Range
-        requests past EOF (502s); under-estimate causes silent truncation with a wrong
-        Content-Length advertised to the backend (which corrupts S3 PUTs). When only the
-        approximate size is available we fall back to single-stream chunked transfer."""
+        We need the EXACT byte length for ranged segments — `filesize_approx` (yt-dlp's
+        bitrate*duration estimate) is unsafe: over-estimate causes Range requests past EOF
+        (502s); under-estimate truncates with a wrong Content-Length (corrupts S3 PUTs). When
+        yt-dlp doesn't report the exact `filesize`, we PROBE it with a 1-byte ranged request
+        (Content-Range carries the true total) rather than falling back to a single un-ranged
+        GET — that bare GET is exactly what YouTube throttles to a stall ('terminated')."""
         total = fmt.get("filesize")
-        if not total or int(total) <= _MIN_PARALLEL_SIZE or _SEGMENT_CONCURRENCY <= 1:
-            return await self._proxy(fmt, kind, None)
-        return self._parallel_response(fmt, kind, int(total))
+        if not total:
+            total = await self._probe_total(fmt)
+        if total and int(total) > _MIN_PARALLEL_SIZE and _SEGMENT_CONCURRENCY > 1:
+            return self._parallel_response(fmt, kind, int(total))
+        # Small file (burst completes before the throttle ramps) or size genuinely unknown
+        # (server didn't return Content-Range): a single stream is acceptable / unavoidable.
+        return await self._proxy(fmt, kind, None)
+
+    async def _probe_total(self, fmt: Format) -> int | None:
+        """Discover the exact content length via a 1-byte ranged GET. googlevideo answers with
+        `Content-Range: bytes 0-0/<total>`. Returns None if the server doesn't support ranges."""
+        headers = {**dict(fmt.get("http_headers") or {}), "Range": "bytes=0-0"}
+        try:
+            client = _shared_http_client()
+            async with client.stream("GET", fmt["url"], headers=headers) as resp:
+                cr = resp.headers.get("content-range")
+                if cr and "/" in cr:
+                    tail = cr.rsplit("/", 1)[-1].strip()
+                    if tail.isdigit():
+                        return int(tail)
+        except httpx.HTTPError:
+            return None
+        return None
 
     def _parallel_response(self, fmt: Format, kind: str, total: int) -> StreamingResponse:
         url = fmt["url"]
@@ -310,14 +342,33 @@ class YoutubeService:
             async def fetch(i: int) -> bytes:
                 start, end = ranges[i]
                 headers = {**base_headers, "Range": f"bytes={start}-{end}"}
-                # client.stream() is cancel-aware: task.cancel() aborts the upstream socket
-                # immediately. client.get() reads to completion regardless of caller state.
-                async with client.stream("GET", url, headers=headers) as resp:
-                    if resp.status_code >= 400:
+                # Retry a throttled/reset/timed-out segment a few times before failing the whole
+                # stream — a single transient blip shouldn't surface to the backend as 'terminated'.
+                # Retryable: transport errors (timeout/RST) + 408/429/5xx. A real 4xx is permanent.
+                for attempt in range(_SEGMENT_RETRIES + 1):
+                    try:
+                        # client.stream() is cancel-aware: task.cancel() aborts the upstream socket
+                        # immediately. client.get() reads to completion regardless of caller state.
+                        async with client.stream("GET", url, headers=headers) as resp:
+                            if resp.status_code >= 400:
+                                code = resp.status_code
+                                retryable = code in (408, 429) or code >= 500
+                                if retryable and attempt < _SEGMENT_RETRIES:
+                                    await asyncio.sleep(_SEGMENT_RETRY_BACKOFF * (2**attempt))
+                                    continue
+                                raise ProviderError(
+                                    502, "UPSTREAM_ERROR", f"segment {i} -> {resp.status_code}"
+                                )
+                            return await resp.aread()
+                    except httpx.TransportError as exc:  # timeout / RST / protocol error
+                        if attempt < _SEGMENT_RETRIES:
+                            await asyncio.sleep(_SEGMENT_RETRY_BACKOFF * (2**attempt))
+                            continue
                         raise ProviderError(
-                            502, "UPSTREAM_ERROR", f"segment {i} -> {resp.status_code}"
-                        )
-                    return await resp.aread()
+                            502, "UPSTREAM_ERROR", f"segment {i} failed after retries: {exc}"
+                        ) from exc
+                # Unreachable: the loop either returns the bytes or raises on the last attempt.
+                raise ProviderError(502, "UPSTREAM_ERROR", f"segment {i} exhausted retries")
 
             # Keep at most _SEGMENT_CONCURRENCY fetches in flight, but yield strictly in order.
             try:

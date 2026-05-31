@@ -139,11 +139,14 @@ resolved to a playable ID are omitted.
   "id": "PL...",
   "title": "My playlist",
   "author": "...",
-  "videoIds": ["dQw4w9WgXcQ", "..."]
+  "videoIds": ["dQw4w9WgXcQ", "..."],
+  "videoTitles": { "dQw4w9WgXcQ": "Never Gonna Give You Up" }
 }
 ```
 - `author`: omit if unknown.
 - `videoIds`: order preserved as in the playlist; may be empty (`[]`) for an empty playlist.
+- `videoTitles`: optional `videoId -> title` map carried free from flat extraction (lets the UI
+  label rows up front). Omit the whole field, or any id whose title is unknown, when unavailable.
 
 ---
 

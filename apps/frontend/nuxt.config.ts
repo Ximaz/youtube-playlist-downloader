@@ -15,14 +15,23 @@ export default defineNuxtConfig({
   compatibilityDate: '2026-05-31',
   ssr: false,
   devtools: { enabled: false },
+  modules: ['@nuxt/ui'],
   typescript: {
     strict: true,
     typeCheck: true,
   },
-  css: ['~/assets/css/base.css'],
+  css: ['~/assets/css/main.css'],
   app: {
     head: {
-      title: 'YouTube Playlist Downloader',
+      title: 'YPD — Download any YouTube playlist',
+      link: [
+        { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
+        { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' },
+        {
+          rel: 'stylesheet',
+          href: 'https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap',
+        },
+      ],
     },
   },
   runtimeConfig: {

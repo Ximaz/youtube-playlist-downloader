@@ -12,6 +12,8 @@ import { fetchMe, fetchUserPlaylist, fetchUserPlaylists, signOut } from '../lib/
 export function useAuth() {
   /** null = unknown (initial /auth/me in flight), then boolean. */
   const signedIn = ref<boolean | null>(null);
+  /** OpenID profile (name/picture) from /auth/me — drives the navbar pill. Null when signed out. */
+  const profile = ref<{ name?: string; picture?: string } | null>(null);
   const userPlaylists = ref<OAuthPlaylistSummary[] | null>(null);
   const loadingPlaylists = ref(false);
   /** Which summary row is currently resolving its videoIds — used to disable the row. */
@@ -28,6 +30,7 @@ export function useAuth() {
   async function init(): Promise<void> {
     const me = await fetchMe();
     signedIn.value = me.signedIn;
+    profile.value = me.signedIn ? { name: me.name, picture: me.picture } : null;
     if (me.signedIn) await loadUserPlaylists();
   }
 
@@ -37,6 +40,7 @@ export function useAuth() {
       const list = await fetchUserPlaylists();
       if (list === null) {
         signedIn.value = false;
+        profile.value = null;
         userPlaylists.value = null;
         return;
       }
@@ -56,6 +60,7 @@ export function useAuth() {
       if (token !== pickToken) return null;
       if (full === null) {
         signedIn.value = false;
+        profile.value = null;
         userPlaylists.value = null;
         return null;
       }
@@ -68,11 +73,13 @@ export function useAuth() {
   async function signOutSession(): Promise<void> {
     await signOut();
     signedIn.value = false;
+    profile.value = null;
     userPlaylists.value = null;
   }
 
   return {
     signedIn,
+    profile,
     userPlaylists,
     loadingPlaylists,
     loadingPlaylistId,

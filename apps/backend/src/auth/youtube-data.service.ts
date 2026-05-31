@@ -46,6 +46,9 @@ const PlaylistItemsResponseSchema = z
     items: z
       .array(
         z.object({
+          // snippet.title is the per-video title — carried free in the same call (the `snippet`
+          // part) so the UI can label queue rows without a second videos.list round-trip.
+          snippet: z.object({ title: z.string().optional() }).partial().optional(),
           contentDetails: z.object({ videoId: z.string().optional() }).partial().optional(),
           status: z.object({ privacyStatus: z.string().optional() }).partial().optional(),
         }),
@@ -124,13 +127,17 @@ export class YouTubeDataService {
     return body.items?.[0]?.snippet?.title;
   }
 
-  /** Playlist items for the playlist, filtered to public + unlisted (the ones we can download). */
-  async listPlaylistVideoIds(accessToken: string, playlistId: string): Promise<string[]> {
-    const out: string[] = [];
+  /** Playlist items (id + title) filtered to public + unlisted (the ones we can download).
+   *  The `snippet` part carries the title in the same call — no extra videos.list round-trip. */
+  async listPlaylistVideos(
+    accessToken: string,
+    playlistId: string,
+  ): Promise<{ id: string; title?: string }[]> {
+    const out: { id: string; title?: string }[] = [];
     let pageToken: string | undefined;
     do {
       const url = new URL('https://www.googleapis.com/youtube/v3/playlistItems');
-      url.searchParams.set('part', 'contentDetails,status');
+      url.searchParams.set('part', 'snippet,contentDetails,status');
       url.searchParams.set('playlistId', playlistId);
       url.searchParams.set('maxResults', String(YT_PAGE_SIZE));
       if (pageToken) url.searchParams.set('pageToken', pageToken);
@@ -138,7 +145,16 @@ export class YouTubeDataService {
       for (const item of body.items ?? []) {
         const videoId = item.contentDetails?.videoId;
         const privacy = item.status?.privacyStatus;
-        if (videoId && (privacy === 'public' || privacy === 'unlisted')) out.push(videoId);
+        if (videoId && (privacy === 'public' || privacy === 'unlisted')) {
+          // YouTube reports deleted/private items with the placeholder titles below; drop those
+          // so the row falls back to the id (and gets the real title from the download stage)
+          // rather than showing a misleading "Deleted video".
+          const title = item.snippet?.title;
+          out.push({
+            id: videoId,
+            ...(title && title !== 'Deleted video' && title !== 'Private video' ? { title } : {}),
+          });
+        }
       }
       pageToken = body.nextPageToken;
     } while (pageToken);

@@ -17,8 +17,9 @@ import { connectSocket, type TypedSocket } from '../lib/socket';
  *  is torn down via the explicit teardown() + onScopeDispose. Add an effectScope if a
  *  future watch needs to share lifetime with a sibling. */
 export function useDownloadBatch() {
-  const selection = ref<MediaSelection>('audio');
-  const format = ref<OutputFormat>('original');
+  // Spec defaults (§6.4): the console's segmented controls start on Combined + Converted.
+  const selection = ref<MediaSelection>('merged');
+  const format = ref<OutputFormat>('converted');
 
   const started = ref(false);
   const checking = ref(false);

@@ -1,0 +1,100 @@
+@import 'tailwindcss';
+@import '@nuxt/ui';
+
+/* Spec design tokens exposed as Tailwind theme variables, generating utility classes:
+   colours become bg, text and border utilities; fonts become font utilities.
+   Keep raw CSS to the irreducible minimum: tokens, two keyframes, body pre-paint. */
+@theme {
+  /* Terracotta accent scale — drives Nuxt UI `primary` (see app.config.ts). 500 == --accent. */
+  --color-terracotta-50: #fbf3ef;
+  --color-terracotta-100: #f6e3d9;
+  --color-terracotta-200: #ecc4b2;
+  --color-terracotta-300: #e0a285;
+  --color-terracotta-400: #d07e5b;
+  --color-terracotta-500: #bb5a3a;
+  --color-terracotta-600: #a44d2f;
+  --color-terracotta-700: #893f27;
+  --color-terracotta-800: #6f3422;
+  --color-terracotta-900: #5b2d1f;
+  --color-terracotta-950: #31160f;
+
+  /* Spec palette (§3) */
+  --color-paper: #f7f4ef;
+  --color-paper-2: #fffdf9;
+  --color-ink: #26221d;
+  --color-ink-soft: #5e574e;
+  --color-ink-faint: #968d80;
+  --color-line: rgba(38, 34, 29, 0.1);
+  --color-line-soft: rgba(38, 34, 29, 0.055);
+  --color-field: #ffffff;
+  --color-track: #ece8e0;
+  --color-accent: #bb5a3a;
+  --color-accent-ink: #a44d2f;
+  --color-accent-tint: rgba(187, 90, 58, 0.1);
+  --color-convert: #d6a085;
+  --color-convert-ink: #a9745a;
+  --color-done: #5f8c6a;
+
+  /* Typography roles (§4) */
+  --font-display: 'Bricolage Grotesque', sans-serif;
+  --font-sans: 'Hanken Grotesk', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  /* Shadows (§3) */
+  --shadow-paper-sm: 0 1px 2px rgba(38, 34, 29, 0.04), 0 3px 10px rgba(38, 34, 29, 0.05);
+  --shadow-paper: 0 14px 36px -18px rgba(38, 34, 29, 0.24);
+
+  /* Motion (§8) — the only two animations in the app. */
+  --animate-rise: rise 0.55s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  --animate-dot: dot-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* Body paints the paper background before Vue mounts (no first-frame flash), and sets
+   the default sans role. ::selection uses the accent tint per §4.
+   NOTE: the 15px base lives on <body>, NOT <html>, on purpose — keeping the root at the
+   standard 16px means Tailwind's rem-based spacing scale maps 1 unit = 4px, so the
+   canonical utilities (p-7, size-4.5, …) resolve to the exact pixel values the design
+   targets. Putting the override on <html> would shrink every rem to 0.9375× and pull the
+   whole spacing grid off the spec. */
+@layer base {
+  html,
+  body {
+    margin: 0;
+    background: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+  }
+  body {
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  #app {
+    min-height: 100vh;
+  }
+  ::selection {
+    background: var(--color-accent-tint);
+    color: var(--color-accent-ink);
+  }
+}

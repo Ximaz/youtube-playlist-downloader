@@ -75,6 +75,8 @@ interface PlaylistDto {
   title?: string;
   author?: string;
   videoIds: string[];
+  /** videoId → title, carried free from the playlist items so the UI can label rows up front. */
+  videoTitles?: Record<string, string>;
 }
 
 interface StreamResult {
@@ -195,10 +197,14 @@ export class YoutubeService {
     const title = page.info.title;
     const author = page.info.author?.name;
     const videoIds: string[] = [];
+    // youtubei.js PlaylistVideo.title is a `Text` node (`.text`); capture it free for the UI.
+    const videoTitles: Record<string, string> = {};
     const collect = (items: readonly unknown[]): void => {
       for (const item of items) {
-        const id = (item as { id?: string }).id;
-        if (id) videoIds.push(id);
+        const { id, title: itemTitle } = item as { id?: string; title?: { text?: string } };
+        if (!id) continue;
+        videoIds.push(id);
+        if (itemTitle?.text) videoTitles[id] = itemTitle.text;
       }
     };
 
@@ -218,6 +224,7 @@ export class YoutubeService {
     const dto: PlaylistDto = { id: playlistId, videoIds };
     if (title) dto.title = title;
     if (author) dto.author = author;
+    if (Object.keys(videoTitles).length) dto.videoTitles = videoTitles;
     return dto;
   }
 
