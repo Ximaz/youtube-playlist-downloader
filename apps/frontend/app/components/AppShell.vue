@@ -33,13 +33,33 @@ async function revealQueue(): Promise<void> {
   queueEl.value?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-/** Console "Start download": resolve the pasted URL into a playlist, then start a job
- *  with the current recipe. Two real steps presented as the spec's single action. */
-async function onStartFromUrl(): Promise<void> {
+/** Console "Start download": resolve the active source (a playlist URL, or a pasted blob of
+ *  video URLs) into a playlist, then start a job with the current recipe. */
+async function onStart(): Promise<void> {
   download.reset();
   try {
-    const ok = await playlistSource.loadFromUrl();
-    if (!ok || !playlistSource.playlist.value) return;
+    if (playlistSource.mode.value === 'paste') {
+      const { ok, skipped } = playlistSource.buildFromUrls();
+      if (!ok) {
+        toast.add({
+          title: 'No video URLs found',
+          description: 'Paste at least one YouTube video URL — one per line.',
+          color: 'error',
+        });
+        return;
+      }
+      if (skipped > 0) {
+        toast.add({
+          title: `${skipped} line${skipped === 1 ? '' : 's'} skipped`,
+          description: 'Lines that were not recognized as a YouTube video URL.',
+          color: 'warning',
+        });
+      }
+    } else {
+      const ok = await playlistSource.loadFromUrl();
+      if (!ok) return;
+    }
+    if (!playlistSource.playlist.value) return;
     await download.start(playlistSource.playlist.value.videoIds);
     void revealQueue();
   } catch (err) {
@@ -102,11 +122,13 @@ function asString(err: unknown): string {
 
       <DownloadConsole
         v-model:url="playlistSource.urlInput.value"
+        v-model:urls="playlistSource.urlsInput.value"
+        v-model:mode="playlistSource.mode.value"
         v-model:selection="download.selection.value"
         v-model:format="download.format.value"
         :loading="playlistSource.loading.value || download.checking.value"
         class="mt-8"
-        @start="onStartFromUrl"
+        @start="onStart"
       />
 
       <PlaylistsSection

@@ -63,9 +63,12 @@ const slug = computed(
 );
 
 function onZip(): void {
+  // The archive holds only the videos that succeeded — failed/unavailable ones are left
+  // out — so report the success count, not the full rendered list.
+  const files = d.successCount.value;
   toast.add({
     title: 'Archive downloading',
-    description: `${slug.value}.zip · ${rendered.value} files`,
+    description: `${slug.value}.zip · ${files} file${files === 1 ? '' : 's'}`,
     color: 'primary',
   });
 }

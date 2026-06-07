@@ -59,12 +59,12 @@ export function useDownloadBatch() {
     () => started.value && total.value > 0 && terminalCount.value >= total.value,
   );
   const pending = computed(() => started.value && !checking.value && !allTerminal.value);
-  /** Strict: archive only when every expected video has terminal-success state. The
-   *  backend enforces the same rule (409 on partial) — hiding the link saves a click. */
+  /** Available once the batch is fully settled (no task still running) AND at least one
+   *  video succeeded — failed/unavailable entries are simply left out of the zip. The
+   *  backend applies the same rule (409 only while work is pending, 404 if nothing
+   *  succeeded), so a visible link always resolves to a real archive. */
   const archiveHref = computed(() =>
-    batchId.value && total.value > 0 && successCount.value === total.value
-      ? archiveUrl(batchId.value)
-      : '',
+    batchId.value && allTerminal.value && successCount.value > 0 ? archiveUrl(batchId.value) : '',
   );
 
   function subscribe(videoIds: string[], sel: MediaSelection, fmt: OutputFormat): void {

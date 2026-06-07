@@ -53,9 +53,10 @@ function isActive(value: T): boolean {
           >
         </span>
 
-        <!-- Format shape: line icon + word -->
+        <!-- Format shape: line icon + word (icon-less options render the word alone) -->
         <span v-else class="flex items-center gap-2">
           <svg
+            v-if="opt.icon"
             class="size-4.25"
             :class="isActive(opt.value) ? 'text-accent' : 'text-ink-soft'"
             viewBox="0 0 24 24"
