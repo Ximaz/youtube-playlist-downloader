@@ -139,6 +139,18 @@ export async function fetchMe(): Promise<AuthMe> {
   return parseJson(res, AuthMeSchema);
 }
 
+/** Mint a fresh anonymous backend session (BFF sets the cookie). Called to self-heal when
+ *  /auth/me reports no tier — i.e. the cookie is stale/missing — so the realtime WS works. */
+export async function ensureSession(): Promise<void> {
+  await request(
+    `${backendBase()}/session`,
+    { method: 'POST', credentials: 'include' },
+    TIMEOUT.authMe,
+    'Failed to start session',
+    2,
+  );
+}
+
 /** Returns null on 401 — the caller treats that as "session ended, sign in again". */
 export async function fetchUserPlaylists(): Promise<OAuthPlaylistSummary[] | null> {
   try {

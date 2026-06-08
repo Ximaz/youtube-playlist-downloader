@@ -121,3 +121,26 @@ second source of truth. **Trade-off:** anonymous WS connections are no longer po
 the public-playlist download flow still works (REST), just without live updates for
 non-signed-in users. Acceptable for the current threat model; if anonymous live
 updates become a requirement later, gate the cookie check on a config flag.
+
+## 0014 — Anonymous sessions (opaque, not JWT) so public users get live progress
+ADR 0013's "anonymous WS connections are no longer possible" broke the README's promise of
+live per-video progress for the **public** (not-signed-in) download flow: with no session the
+gateway rejects the handshake (`unauthorized`), so the `progress` map never updates and the
+archive link never appears. Rather than relax the WS auth, every visitor now gets a real,
+server-issued **anonymous `Session`** (the `Session.account` relation was already optional, so
+no schema rewrite — only additive `tier`/`userAgent`/`ip` columns). The Nuxt BFF mints one via
+`POST /auth/session` on the first browser navigation (gated on `Accept: text/html` so health
+probes/bots can't spam rows; the healthcheck moved to `/healthz`), stores the opaque token in
+the httpOnly cookie, and the gateway's existing "session must exist in Postgres" check then
+passes — anonymous and signed-in connections take the *same* auth path. Batches created
+anonymously become session-scoped too (stronger than the prior UUID-only capability), and the
+session carries a `tier` (everyone `paid` for now) that the future free/paid queueing reads
+without another migration. **Opaque token, not JWT:** the backend already owns the `Session`
+table and queries it on every handshake + for batch scoping, so a JWT's stateless validation
+buys nothing here while adding a signing-key to manage/rotate (the key-management surface ADR
+0008 deliberately avoids) and awkward revocation. A 122-bit server-issued id is unforgeable by
+construction; `userAgent` + `ip` are recorded at creation as authenticity/audit signals bound
+to the token. **Trade-off:** one `Session` row per anonymous browser (30-day cookie) — a
+periodic prune of account-less sessions older than N days is the GC follow-up. Stale cookies
+(e.g. a dev DB reset) self-heal: `/auth/me` omits `tier` when the session is gone, and the
+frontend re-mints via `POST /api/session`.

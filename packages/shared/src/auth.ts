@@ -47,13 +47,21 @@ export const OAuthPlaylistSchema = z
   .strict();
 export type OAuthPlaylist = z.infer<typeof OAuthPlaylistSchema>;
 
+/** Billing/scheduling tier carried by every Session. `paid` for everyone today (no paid flow
+ *  yet); drives the future free/paid queueing + bandwidth without a schema change. */
+export const SessionTierSchema = z.enum(["free", "paid"]);
+export type SessionTier = z.infer<typeof SessionTierSchema>;
+
 /** GET /auth/me response — cheap signed-in check that doesn't touch the YouTube API.
  * `name`/`picture` come from the OpenID id_token captured at sign-in (the `profile` scope),
  * so the navbar can show the real account without a separate Google userinfo call. Both are
- * optional: a session predating the `profile` scope, or an account with no picture, omits them. */
+ * optional: a session predating the `profile` scope, or an account with no picture, omits them.
+ * `tier` is present whenever a valid backend Session exists (anonymous or signed-in); its
+ * ABSENCE signals a stale/missing session, which the frontend self-heals by minting a new one. */
 export const AuthMeSchema = z
   .object({
     signedIn: z.boolean(),
+    tier: SessionTierSchema.optional(),
     name: z.string().optional(),
     picture: z.url().optional(),
   })

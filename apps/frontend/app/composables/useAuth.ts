@@ -1,7 +1,7 @@
-import type { OAuthPlaylist, OAuthPlaylistSummary } from '@ypd/shared';
+import type { OAuthPlaylist, OAuthPlaylistSummary, SessionTier } from '@ypd/shared';
 import { ref } from 'vue';
 
-import { fetchMe, fetchUserPlaylist, fetchUserPlaylists, signOut } from '../lib/api';
+import { ensureSession, fetchMe, fetchUserPlaylist, fetchUserPlaylists, signOut } from '../lib/api';
 
 /** Auth + OAuth playlist picker state.
  *
@@ -12,6 +12,8 @@ import { fetchMe, fetchUserPlaylist, fetchUserPlaylists, signOut } from '../lib/
 export function useAuth() {
   /** null = unknown (initial /auth/me in flight), then boolean. */
   const signedIn = ref<boolean | null>(null);
+  /** Session tier (everyone 'paid' today). Available to the app once init() resolves. */
+  const tier = ref<SessionTier>('paid');
   /** OpenID profile (name/picture) from /auth/me — drives the navbar pill. Null when signed out. */
   const profile = ref<{ name?: string; picture?: string } | null>(null);
   const userPlaylists = ref<OAuthPlaylistSummary[] | null>(null);
@@ -28,7 +30,15 @@ export function useAuth() {
   }
 
   async function init(): Promise<void> {
-    const me = await fetchMe();
+    let me = await fetchMe();
+    // No `tier` ⇒ no valid backend session (stale/missing cookie). Mint one and re-check so the
+    // realtime WS — which requires a session — works for anonymous users too. The BFF middleware
+    // already mints on a fresh visit; this covers the stale-cookie case (e.g. a dev DB reset).
+    if (me.tier === undefined) {
+      await ensureSession();
+      me = await fetchMe();
+    }
+    tier.value = me.tier ?? 'paid';
     signedIn.value = me.signedIn;
     profile.value = me.signedIn ? { name: me.name, picture: me.picture } : null;
     if (me.signedIn) await loadUserPlaylists();
@@ -79,6 +89,7 @@ export function useAuth() {
 
   return {
     signedIn,
+    tier,
     profile,
     userPlaylists,
     loadingPlaylists,

@@ -14,10 +14,17 @@ datasource db {
   provider = "postgresql"
 }
 
-// Opaque session: the value set in the user's httpOnly cookie. One per browser sign-in.
+// Opaque session: the value set in the user's httpOnly cookie. Created for EVERY visitor
+// (anonymous, no OAuthAccount) so the realtime WebSocket + batch scoping work without sign-in;
+// a Google sign-in adds the OAuthAccount relation. The opaque 122-bit id is the unforgeable
+// credential; `userAgent`/`ip` are captured at creation as authenticity/audit signals, and
+// `tier` drives the (future) paid/free queueing — everyone is 'paid' for now (no paid flow yet).
 model Session {
   id        String        @id @default(uuid())
   createdAt DateTime      @default(now())
+  tier      String        @default("paid")
+  userAgent String?
+  ip        String?
   account   OAuthAccount?
 }
 

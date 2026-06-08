@@ -7,7 +7,7 @@ import {
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
-import type { AuthMe, OAuthPlaylist, OAuthPlaylistSummary } from '@ypd/shared';
+import type { AuthMe, OAuthPlaylist, OAuthPlaylistSummary, SessionTier } from '@ypd/shared';
 import { CodeChallengeMethod, OAuth2Client } from 'google-auth-library';
 
 import { CacheService } from '../cache/cache.service';
@@ -45,6 +45,28 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly youtube: YouTubeDataService,
   ) {}
+
+  /**
+   * Create an ANONYMOUS session (no OAuthAccount) so a not-signed-in visitor gets a real,
+   * server-issued opaque token — the realtime WS handshake and batch session-scoping then work
+   * without sign-in. `userAgent`/`ip` are recorded as authenticity/audit signals bound to the
+   * token; `tier` defaults to 'paid' (no paid flow yet). A later Google sign-in mints its own
+   * session (with the OAuthAccount) and the BFF swaps the cookie.
+   */
+  async createSession(
+    userAgent?: string,
+    ip?: string,
+  ): Promise<{ sessionId: string; tier: SessionTier }> {
+    const session = await this.prisma.session.create({
+      data: {
+        // Bound the stored strings so a hostile/oversized UA header can't bloat the row.
+        ...(userAgent ? { userAgent: userAgent.slice(0, 512) } : {}),
+        ...(ip ? { ip: ip.slice(0, 128) } : {}),
+      },
+      select: { id: true, tier: true },
+    });
+    return { sessionId: session.id, tier: normalizeTier(session.tier) };
+  }
 
   /** Build the Google consent URL. Stores PKCE `codeVerifier` under the `state` key in Valkey
    *  and returns `state` so the controller can also pin it as an httpOnly cookie — the callback
@@ -140,19 +162,24 @@ export class AuthService {
     ]);
   }
 
-  /** Cheap signed-in check + profile for the navbar. Returns `{ signedIn: false }` for unknown
-   * / signed-out sessions — never throws, never touches the YouTube Data API. `name`/`picture`
-   * come straight from the row populated at sign-in (no Google round-trip). */
+  /** Cheap signed-in check + profile for the navbar. Resolves the Session itself so it can
+   * report the `tier`: a valid session (anonymous OR signed-in) returns `tier`; an unknown/stale
+   * session returns `{ signedIn: false }` with NO tier, which the frontend reads as "mint a new
+   * session". Never throws, never touches the YouTube Data API. `name`/`picture` come from the
+   * row populated at sign-in (no Google round-trip). */
   async getMe(sessionId: string): Promise<AuthMe> {
-    const account = await this.prisma.oAuthAccount.findUnique({
-      where: { sessionId },
-      select: { name: true, picture: true },
+    const session = await this.prisma.session.findUnique({
+      where: { id: sessionId },
+      select: { tier: true, account: { select: { name: true, picture: true } } },
     });
-    if (!account) return { signedIn: false };
+    if (!session) return { signedIn: false };
+    const tier = normalizeTier(session.tier);
+    if (!session.account) return { signedIn: false, tier };
     return {
       signedIn: true,
-      ...(account.name ? { name: account.name } : {}),
-      ...(account.picture ? { picture: account.picture } : {}),
+      tier,
+      ...(session.account.name ? { name: session.account.name } : {}),
+      ...(session.account.picture ? { picture: session.account.picture } : {}),
     };
   }
 
@@ -290,4 +317,9 @@ export class AuthService {
     }
     return undefined;
   }
+}
+
+/** Narrow the free-form `tier` column to the SessionTier union (defaults to 'paid'). */
+function normalizeTier(tier: string): SessionTier {
+  return tier === 'free' ? 'free' : 'paid';
 }

@@ -1,7 +1,7 @@
 import type { MediaSelection, OutputFormat, VideoProgress } from '@ypd/shared';
 import { computed, onScopeDispose, ref, shallowRef } from 'vue';
 
-import { archiveUrl, fetchStatus, startDownload } from '../lib/api';
+import { archiveUrl, ensureSession, fetchStatus, startDownload } from '../lib/api';
 import { connectSocket, type TypedSocket } from '../lib/socket';
 
 /** Terminal steps never regress — used so a (possibly older) resync can't downgrade them. */
@@ -149,6 +149,7 @@ export function useDownloadBatch() {
     teardownSocket();
     const mySub = ++subId;
     let firstConnect = true;
+    let healedAuth = false;
     socket = connectSocket();
     socket.on('connect', () => {
       wsConnected.value = true;
@@ -166,6 +167,13 @@ export function useDownloadBatch() {
     socket.on('connect_error', (err) => {
       wsConnected.value = false;
       console.warn('WebSocket connect_error (retrying):', err.message);
+      // A dropped session (e.g. the backend session was cleared mid-batch) surfaces as
+      // 'unauthorized'. Mint a fresh anonymous session once; the next reconnect carries the
+      // new cookie. Guard so we don't loop on a persistent failure.
+      if (err.message === 'unauthorized' && !healedAuth) {
+        healedAuth = true;
+        void ensureSession().catch(() => undefined);
+      }
     });
     socket.on('video:progress', (msg) => {
       // Reassign — shallowRef would miss `progress.value[msg.videoId] = msg`.

@@ -49,5 +49,7 @@ EXPOSE 8080
 # translation must happen in the parent process.
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/ypd-frontend-entrypoint"]
 
+# Probe the dependency-free /healthz route (not the SPA document) so the healthcheck never
+# triggers anonymous-session minting and stays cheap.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \
-    CMD wget -q --spider http://127.0.0.1:8080/ || exit 1
+    CMD wget -q --spider http://127.0.0.1:8080/healthz || exit 1

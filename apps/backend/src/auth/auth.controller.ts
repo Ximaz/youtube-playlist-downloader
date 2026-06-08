@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   HttpCode,
   Param,
   Post,
@@ -48,10 +49,23 @@ export class AuthController {
     return { token: sessionId };
   }
 
+  @Post('session')
+  @ApiOperation({
+    summary:
+      'Create an anonymous session (opaque token) so not-signed-in public users get live progress + session-scoped batches. The Nuxt BFF calls this and stores the token in its httpOnly cookie; User-Agent + client IP (X-Forwarded-For) are captured as authenticity signals.',
+  })
+  async createSession(
+    @Headers('user-agent') userAgent?: string,
+    @Headers('x-forwarded-for') forwardedFor?: string,
+  ): Promise<{ token: string; tier: string }> {
+    const { sessionId, tier } = await this.auth.createSession(userAgent, clientIp(forwardedFor));
+    return { token: sessionId, tier };
+  }
+
   @Get('me')
   @ApiOperation({
     summary:
-      'Signed-in check + OpenID profile (name/picture) for the navbar; 200 always. Does not touch the YouTube Data API.',
+      'Signed-in check + tier + OpenID profile (name/picture) for the navbar; 200 always. Does not touch the YouTube Data API.',
   })
   async me(@SessionId() sessionId?: string): Promise<AuthMe> {
     if (!sessionId) return { signedIn: false };
@@ -92,4 +106,11 @@ export class AuthController {
     if (!sessionId) throw new UnauthorizedException('Not signed in.');
     return sessionId;
   }
+}
+
+/** First hop of an `X-Forwarded-For` chain (the real client) — the BFF sets this to the IP it
+ *  saw. Returns undefined when absent so the column stays null rather than storing a proxy IP. */
+function clientIp(forwardedFor?: string): string | undefined {
+  const first = forwardedFor?.split(',')[0]?.trim();
+  return first || undefined;
 }
