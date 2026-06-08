@@ -2,6 +2,7 @@ import 'reflect-metadata';
 
 import { randomUUID } from 'node:crypto';
 
+import { Logger } from '@nestjs/common';
 import { HttpAdapterHost, NestFactory } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import type { NextFunction, Request, Response } from 'express';
@@ -16,6 +17,20 @@ const REQUEST_ID_HEADER = 'x-ypd-request-id';
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
   const config = app.get(AppConfigService);
+  const logger = new Logger('Bootstrap');
+
+  // Process-level safety net. The API, WebSocket gateway and (until the role split) both
+  // worker pools share ONE process, so a single stray rejection — e.g. a fire-and-forget
+  // `void job.updateProgress(...)` — must not silently crash all of them. Log every
+  // unhandledRejection; on an uncaughtException the process state is unknown, so drain
+  // gracefully and exit non-zero for the orchestrator to restart.
+  process.on('unhandledRejection', (reason) => {
+    logger.error(`Unhandled promise rejection: ${reason instanceof Error ? reason.stack : reason}`);
+  });
+  process.on('uncaughtException', (err) => {
+    logger.error(`Uncaught exception, shutting down: ${err.stack ?? err.message}`);
+    void app.close().finally(() => process.exit(1));
+  });
 
   // Without this, OnModuleDestroy on PrismaService / CacheService / RealtimeGateway and
   // @nestjs/bullmq's worker.close() never fire on SIGTERM — in-flight jobs get SIGKILL'd

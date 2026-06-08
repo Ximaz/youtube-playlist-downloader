@@ -13,11 +13,20 @@ export interface StorageConfig {
   secretKey: string;
   bucket: string;
   forcePathStyle: boolean;
+  /** TCP connect timeout (ms) — a hung S3 must not stall a worker until the OS TCP timeout. */
+  connectionTimeoutMs: number;
+  /** Per-request socket timeout (ms) once connected. */
+  requestTimeoutMs: number;
+  /** SDK retry attempts (standard mode). */
+  maxAttempts: number;
 }
 
 export interface CacheConfig {
   url: string;
   metadataTtlSeconds: number;
+  /** Per-command timeout (ms): a wedged-but-connected Valkey rejects fast instead of hanging
+   *  every code path forever (iovalkey defaults to enableOfflineQueue + no command timeout). */
+  commandTimeoutMs: number;
 }
 
 export interface GoogleOAuthConfig {
@@ -86,10 +95,14 @@ export default (): AppConfig => {
       secretKey: required('S3_SECRET_KEY'),
       bucket: required('S3_BUCKET'),
       forcePathStyle: (process.env.S3_FORCE_PATH_STYLE ?? 'true') === 'true',
+      connectionTimeoutMs: Number(process.env.S3_CONNECTION_TIMEOUT_MS ?? 3000),
+      requestTimeoutMs: Number(process.env.S3_REQUEST_TIMEOUT_MS ?? 30000),
+      maxAttempts: Number(process.env.S3_MAX_ATTEMPTS ?? 3),
     },
     cache: {
       url: required('CACHE_URL'),
       metadataTtlSeconds: Number(process.env.METADATA_CACHE_TTL ?? 86400),
+      commandTimeoutMs: Number(process.env.CACHE_COMMAND_TIMEOUT_MS ?? 5000),
     },
     google: {
       clientId: process.env.GOOGLE_CLIENT_ID ?? '',

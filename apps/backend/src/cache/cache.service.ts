@@ -1,4 +1,4 @@
-import { Injectable, type OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
 import Redis from 'iovalkey';
 
 import { AppConfigService } from '../config/app-config.service';
@@ -6,10 +6,24 @@ import { AppConfigService } from '../config/app-config.service';
 /** Thin typed wrapper over a single Valkey connection (iovalkey). */
 @Injectable()
 export class CacheService implements OnModuleDestroy {
+  private readonly logger = new Logger(CacheService.name);
   private readonly client: Redis;
 
   constructor(config: AppConfigService) {
-    this.client = new Redis(config.cache.url, { maxRetriesPerRequest: 3 });
+    // commandTimeout bounds every command so a wedged-but-connected Valkey (RDB save, slow
+    // AOF rewrite, swap) rejects fast and AllExceptionsFilter turns it into a clean 503 —
+    // instead of hanging metadata reads, WorkStore lookups, WS replay and locks forever.
+    // retryStrategy is capped so reconnect attempts don't back off unboundedly.
+    this.client = new Redis(config.cache.url, {
+      maxRetriesPerRequest: 3,
+      commandTimeout: config.cache.commandTimeoutMs,
+      retryStrategy: (times) => Math.min(times * 200, 2000),
+    });
+    // Without an 'error' listener iovalkey would emit it as an unhandled 'error' event and
+    // could crash the process on a transient Valkey blip.
+    this.client.on('error', (err) => this.logger.warn(`Valkey error: ${err.message}`));
+    this.client.on('reconnecting', () => this.logger.warn('Valkey reconnecting'));
+    this.client.on('end', () => this.logger.warn('Valkey connection ended'));
   }
 
   async getJson<T>(key: string): Promise<T | null> {

@@ -51,37 +51,66 @@ export class ApiError extends Error {
   }
 }
 
+/** Gateway/proxy errors that a brief backend redeploy or restart produces — safe to retry. */
+function isRetriableStatus(status: number): boolean {
+  return status === 502 || status === 503 || status === 504;
+}
+
+async function readErrorDetail(res: Response): Promise<string> {
+  // Body might be a `{error: {code, message}}` envelope (Phase 1 global filter) or empty.
+  try {
+    const body = await res.text();
+    if (!body) return '';
+    try {
+      const parsed = JSON.parse(body) as { error?: { message?: string } };
+      return parsed.error?.message ?? body.slice(0, 200);
+    } catch {
+      return body.slice(0, 200);
+    }
+  } catch {
+    return ''; // Body already consumed or stream broken.
+  }
+}
+
+/**
+ * One HTTP call with optional retry-with-backoff. `retries` should be > 0 only for IDEMPOTENT
+ * calls (GETs, the status resync) — never for `POST /downloads`, which creates a batch.
+ * Fast network blips (connection refused mid-redeploy) and 502/503/504 are retried; a true
+ * request TIMEOUT is not (retrying a hung backend just compounds the wait).
+ */
 async function request(
   url: string,
   init: RequestInit,
   timeoutMs: number,
   errorPrefix: string,
+  retries = 0,
 ): Promise<Response> {
-  let res: Response;
-  try {
-    res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
-  } catch (err) {
-    throw new ApiError(0, `${errorPrefix}: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  if (!res.ok) {
-    // Body might be a `{error: {code, message}}` envelope (Phase 1 global filter) or empty.
-    let detail = '';
-    try {
-      const body = await res.text();
-      if (body) {
-        try {
-          const parsed = JSON.parse(body) as { error?: { message?: string } };
-          detail = parsed.error?.message ?? body.slice(0, 200);
-        } catch {
-          detail = body.slice(0, 200);
-        }
-      }
-    } catch {
-      // Body already consumed or stream broken — keep `detail` empty.
+  for (let attempt = 0; ; attempt++) {
+    if (attempt > 0) {
+      const delay = 300 * 2 ** (attempt - 1) + Math.random() * 100; // exp backoff + jitter
+      await new Promise((r) => setTimeout(r, delay));
     }
-    throw new ApiError(res.status, `${errorPrefix} (${res.status})${detail ? ': ' + detail : ''}`);
+    let res: Response;
+    try {
+      res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    } catch (err) {
+      const isTimeout = err instanceof Error && err.name === 'TimeoutError';
+      if (!isTimeout && attempt < retries) continue; // retry fast network failures only
+      throw new ApiError(0, `${errorPrefix}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (!res.ok) {
+      if (isRetriableStatus(res.status) && attempt < retries) {
+        await res.body?.cancel().catch(() => undefined);
+        continue;
+      }
+      const detail = await readErrorDetail(res);
+      throw new ApiError(
+        res.status,
+        `${errorPrefix} (${res.status})${detail ? ': ' + detail : ''}`,
+      );
+    }
+    return res;
   }
-  return res;
 }
 
 async function parseJson<S extends z.ZodType>(res: Response, schema: S): Promise<z.infer<S>> {
@@ -105,6 +134,7 @@ export async function fetchMe(): Promise<AuthMe> {
     { credentials: 'include' },
     TIMEOUT.authMe,
     'Failed to read sign-in state',
+    2,
   );
   return parseJson(res, AuthMeSchema);
 }
@@ -117,6 +147,7 @@ export async function fetchUserPlaylists(): Promise<OAuthPlaylistSummary[] | nul
       { credentials: 'include' },
       TIMEOUT.authPlaylists,
       'Failed to load your playlists',
+      2,
     );
     return parseJson(res, z.array(OAuthPlaylistSummarySchema));
   } catch (err) {
@@ -133,6 +164,7 @@ export async function fetchUserPlaylist(id: string): Promise<OAuthPlaylist | nul
       { credentials: 'include' },
       TIMEOUT.authPlaylist,
       'Failed to load playlist',
+      2,
     );
     return parseJson(res, OAuthPlaylistSchema);
   } catch (err) {
@@ -156,6 +188,7 @@ export async function getPlaylist(id: string): Promise<PlaylistMetadata> {
     {},
     TIMEOUT.publicPlaylist,
     'Failed to load playlist',
+    2,
   );
   return parseJson(res, PlaylistMetadataSchema);
 }
@@ -187,6 +220,7 @@ export async function fetchStatus(req: WorkSelector): Promise<VideoProgress[]> {
     },
     TIMEOUT.status,
     'Failed to fetch status',
+    2,
   );
   return parseJson(res, z.array(VideoProgressSchema));
 }

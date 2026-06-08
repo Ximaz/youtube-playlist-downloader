@@ -8,7 +8,7 @@ import {
   VideoMetadataSchema,
 } from '@ypd/shared';
 import type { PlaylistMetadata, VideoMetadata } from '@ypd/shared';
-import pLimit from 'p-limit';
+import pLimit, { type LimitFunction } from 'p-limit';
 import type { z } from 'zod';
 
 import { CacheService } from '../cache/cache.service';
@@ -45,13 +45,15 @@ export class ProvidersUnavailableError extends Error {
 
 /** No keep-alive idleness allowed once headers arrive: a slowloris upstream wedges a worker. */
 const STREAM_INACTIVITY_MS = Number(process.env.STREAM_INACTIVITY_MS ?? 30_000);
-/** Module-level semaphore caps simultaneous provider calls so a 100-video probe can't open
- *  100 sockets per provider. Configurable; default 16 matches the in-service batches. */
-const PROVIDER_GLOBAL_CONCURRENCY = Math.max(
-  1,
-  Number(process.env.PROVIDER_GLOBAL_CONCURRENCY ?? 16),
-);
-const providerLimit = pLimit(PROVIDER_GLOBAL_CONCURRENCY);
+/** Per-PROVIDER concurrency cap (was a single global). Keyed by provider name so a degraded
+ *  provider holding slots open for the full timeout can't starve the healthy one, and so each
+ *  provider replica fleet has its own budget. Default 16 matches the in-service batches. */
+const PROVIDER_CONCURRENCY = Math.max(1, Number(process.env.PROVIDER_GLOBAL_CONCURRENCY ?? 16));
+/** Circuit breaker: after this many CONSECUTIVE transport failures a provider is skipped for
+ *  the cooldown window, so a hard-down provider stops costing a full timeout per request (and
+ *  stops filling the concurrency budget) before fallback to the next provider. */
+const BREAKER_THRESHOLD = Math.max(1, Number(process.env.PROVIDER_BREAKER_THRESHOLD ?? 5));
+const BREAKER_COOLDOWN_MS = Math.max(0, Number(process.env.PROVIDER_BREAKER_COOLDOWN_MS ?? 30_000));
 /** Negative-result cache (Valkey) for videoIds where every provider returned NOT_FOUND.
  *  60 s is short on purpose — a transient classification problem self-corrects soon. */
 const NEG_CACHE_TTL_SECONDS = 60;
@@ -68,6 +70,10 @@ const NEG_PLAYLIST_KEY = (id: string): string => `provider:neg:playlist:${id}`;
 export class ProviderClientService {
   private readonly logger = new Logger(ProviderClientService.name);
   private readonly timeoutMs: number;
+  /** Per-provider concurrency budgets (lazily created) — see PROVIDER_CONCURRENCY. */
+  private readonly limits = new Map<string, LimitFunction>();
+  /** Per-provider circuit-breaker state — see BREAKER_THRESHOLD / BREAKER_COOLDOWN_MS. */
+  private readonly breaker = new Map<string, { failures: number; openUntil: number }>();
 
   constructor(
     private readonly registry: ProviderRegistry,
@@ -115,6 +121,12 @@ export class ProviderClientService {
     let sawNotFound = false;
     let sawTransportError = false;
     for (const provider of this.registry.providers) {
+      // Skip a provider whose breaker is open: don't pay the full timeout on a known-down one.
+      if (this.#breakerOpen(provider.name)) {
+        sawTransportError = true;
+        this.metrics.providerFallbacks.inc({ from: provider.name, reason: 'circuit_open' });
+        continue;
+      }
       const url = new URL(`${provider.baseUrl}/videos/${encodeURIComponent(videoId)}/stream`);
       url.searchParams.set('kind', kind);
       if (itag) url.searchParams.set('itag', itag);
@@ -126,9 +138,11 @@ export class ProviderClientService {
         path: '/stream',
       });
       try {
-        // Honour the global concurrency cap so 100-video probes can't open 100 sockets per
+        // Honour the per-provider concurrency cap so 100-video probes can't open 100 sockets per
         // provider; pLimit queues the request until a slot frees.
-        const res = await providerLimit(() => fetch(url, { signal: controller.signal }));
+        const res = await this.#limitFor(provider.name)(() =>
+          fetch(url, { signal: controller.signal }),
+        );
         // Headers have arrived; let the (potentially long) body stream without a header timeout,
         // but install an inactivity watchdog so a stalled body releases the worker.
         clearTimeout(timer);
@@ -136,14 +150,20 @@ export class ProviderClientService {
         if (!res.ok || !res.body) {
           this.logger.warn(`[${provider.name}] stream ${videoId} (${kind}) -> ${res.status}`);
           const code = await this.#peekErrorCode(res);
-          if (code === 'VIDEO_NOT_FOUND' || code === 'FORMAT_NOT_FOUND') sawNotFound = true;
-          else sawTransportError = true;
+          if (code === 'VIDEO_NOT_FOUND' || code === 'FORMAT_NOT_FOUND') {
+            sawNotFound = true;
+            this.#recordSuccess(provider.name); // provider is healthy; the video is just gone
+          } else {
+            sawTransportError = true;
+            this.#recordFailure(provider.name);
+          }
           this.metrics.providerFallbacks.inc({
             from: provider.name,
             reason: code ?? `http_${res.status}`,
           });
           continue;
         }
+        this.#recordSuccess(provider.name);
         return {
           provider: provider.name,
           status: res.status,
@@ -161,6 +181,7 @@ export class ProviderClientService {
         this.logger.warn(`[${provider.name}] stream ${videoId} (${kind}) failed: ${asMsg(err)}`);
         this.metrics.providerFallbacks.inc({ from: provider.name, reason: 'transport' });
         sawTransportError = true;
+        this.#recordFailure(provider.name);
       }
     }
     if (sawTransportError || !sawNotFound) {
@@ -197,12 +218,17 @@ export class ProviderClientService {
     let transportError = false;
     let sawNotFound = false;
     for (const provider of this.registry.providers) {
+      if (this.#breakerOpen(provider.name)) {
+        transportError = true;
+        this.metrics.providerFallbacks.inc({ from: provider.name, reason: 'circuit_open' });
+        continue;
+      }
       const endTimer = this.metrics.providerRequestDuration.startTimer({
         provider: provider.name,
         path: pathLabel(path),
       });
       try {
-        let res = await providerLimit(() =>
+        let res = await this.#limitFor(provider.name)(() =>
           fetch(`${provider.baseUrl}${path}`, { signal: AbortSignal.timeout(this.timeoutMs) }),
         );
         // 429 with Retry-After: pause + retry ONCE on the same provider before falling
@@ -213,7 +239,7 @@ export class ProviderClientService {
           if (retryAfterMs !== null && retryAfterMs <= 30_000) {
             this.logger.warn(`[${provider.name}] 429 on ${path}; waiting ${retryAfterMs}ms`);
             await new Promise((r) => setTimeout(r, retryAfterMs));
-            res = await providerLimit(() =>
+            res = await this.#limitFor(provider.name)(() =>
               fetch(`${provider.baseUrl}${path}`, {
                 signal: AbortSignal.timeout(this.timeoutMs),
               }),
@@ -226,8 +252,13 @@ export class ProviderClientService {
           this.logger.warn(
             `[${provider.name}] GET ${path} -> ${res.status}${code ? ' ' + code : ''}`,
           );
-          if (code === 'VIDEO_NOT_FOUND' || code === 'PLAYLIST_NOT_FOUND') sawNotFound = true;
-          else transportError = true;
+          if (code === 'VIDEO_NOT_FOUND' || code === 'PLAYLIST_NOT_FOUND') {
+            sawNotFound = true;
+            this.#recordSuccess(provider.name); // provider is healthy; the entity is just gone
+          } else {
+            transportError = true;
+            this.#recordFailure(provider.name);
+          }
           this.metrics.providerFallbacks.inc({
             from: provider.name,
             reason: code ?? `http_${res.status}`,
@@ -244,14 +275,17 @@ export class ProviderClientService {
             path: pathLabel(path),
           });
           transportError = true;
+          this.#recordFailure(provider.name);
           continue;
         }
+        this.#recordSuccess(provider.name);
         return { value: parsed.data, transportError, sawNotFound };
       } catch (err) {
         endTimer({ status: 'error' });
         this.logger.warn(`[${provider.name}] GET ${path} failed: ${asMsg(err)}`);
         this.metrics.providerFallbacks.inc({ from: provider.name, reason: 'transport' });
         transportError = true;
+        this.#recordFailure(provider.name);
       }
     }
     return { value: null, transportError, sawNotFound };
@@ -274,6 +308,40 @@ export class ProviderClientService {
     if (!value) return undefined;
     const n = Number(value);
     return Number.isFinite(n) ? n : undefined;
+  }
+
+  /** Lazily-created per-provider concurrency budget. */
+  #limitFor(name: string): LimitFunction {
+    let limit = this.limits.get(name);
+    if (!limit) {
+      limit = pLimit(PROVIDER_CONCURRENCY);
+      this.limits.set(name, limit);
+    }
+    return limit;
+  }
+
+  /** True while a provider's breaker is open (recent consecutive transport failures). */
+  #breakerOpen(name: string): boolean {
+    const state = this.breaker.get(name);
+    return state !== undefined && Date.now() < state.openUntil;
+  }
+
+  /** A clean response resets the breaker; a NOT_FOUND does NOT (the provider is healthy). */
+  #recordSuccess(name: string): void {
+    if (this.breaker.has(name)) this.breaker.delete(name);
+  }
+
+  /** A transport-level failure trips the breaker after BREAKER_THRESHOLD consecutive failures. */
+  #recordFailure(name: string): void {
+    const state = this.breaker.get(name) ?? { failures: 0, openUntil: 0 };
+    state.failures += 1;
+    if (state.failures >= BREAKER_THRESHOLD) {
+      state.openUntil = Date.now() + BREAKER_COOLDOWN_MS;
+      this.logger.warn(
+        `[${name}] circuit opened for ${BREAKER_COOLDOWN_MS}ms after ${state.failures} failures`,
+      );
+    }
+    this.breaker.set(name, state);
   }
 }
 

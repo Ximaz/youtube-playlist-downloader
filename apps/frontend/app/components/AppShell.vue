@@ -22,8 +22,14 @@ onMounted(async () => {
   try {
     await auth.init();
   } catch (err) {
-    auth.signedIn.value = false;
-    toast.add({ title: 'Sign-in check failed', description: asString(err), color: 'error' });
+    // /auth/me always 200s, so a throw here (after fetchMe's retries) is connectivity, never a
+    // real sign-out — leave signedIn as null ("unknown", the same state as the initial load)
+    // rather than falsely flipping to signed-out. The public paste/URL download flow still works.
+    toast.add({
+      title: 'Could not reach the server',
+      description: asString(err),
+      color: 'warning',
+    });
   }
 });
 
@@ -143,7 +149,11 @@ function asString(err: unknown): string {
       <div v-if="download.started.value" ref="queueEl" class="mt-16 scroll-mt-24">
         <QueuePanel
           :download="download"
-          :video-ids="playlistSource.playlist.value?.videoIds ?? []"
+          :video-ids="
+            playlistSource.playlist.value?.videoIds.length
+              ? playlistSource.playlist.value.videoIds
+              : download.videoIds.value
+          "
           :video-titles="playlistSource.playlist.value?.videoTitles ?? {}"
           :playlist-title="playlistSource.playlist.value?.title ?? null"
         />

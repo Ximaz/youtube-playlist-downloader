@@ -4,6 +4,56 @@ import { computed, onScopeDispose, ref, shallowRef } from 'vue';
 import { archiveUrl, fetchStatus, startDownload } from '../lib/api';
 import { connectSocket, type TypedSocket } from '../lib/socket';
 
+/** Terminal steps never regress — used so a (possibly older) resync can't downgrade them. */
+const TERMINAL_STEPS: ReadonlySet<VideoProgress['step']> = new Set([
+  'done',
+  'cached',
+  'failed',
+  'unavailable',
+]);
+
+/** Enough to re-subscribe + replay after a tab refresh. The backend keeps per-work-item state
+ *  for 6h (WorkStore TTL), so a reload within that window resumes live progress + the archive
+ *  link instead of dropping to an empty console. */
+const STORAGE_KEY = 'ypd.batch.v1';
+interface PersistedBatch {
+  batchId: string;
+  videoIds: string[];
+  selection: MediaSelection;
+  format: OutputFormat;
+}
+
+function loadPersisted(): PersistedBatch | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return null;
+    const p = JSON.parse(raw) as PersistedBatch;
+    if (p?.batchId && Array.isArray(p.videoIds) && p.videoIds.length > 0) return p;
+  } catch {
+    // corrupt/unavailable storage — ignore
+  }
+  return null;
+}
+
+function savePersisted(p: PersistedBatch): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(p));
+  } catch {
+    // storage full/disabled — non-fatal, recovery just won't survive a reload
+  }
+}
+
+function clearPersisted(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 /** Owns the live download batch: configuration (selection/format), runtime flags,
  *  the per-video progress map, the socket lifecycle and all derived counts.
  *
@@ -29,6 +79,9 @@ export function useDownloadBatch() {
   const wsConnected = ref<boolean | null>(null);
 
   let socket: TypedSocket | null = null;
+  /** Bumped on every (re)subscribe so a slow in-flight resync from a superseded socket
+   *  can detect it's stale and skip merging. */
+  let subId = 0;
 
   function teardownSocket(): void {
     if (!socket) return;
@@ -53,6 +106,9 @@ export function useDownloadBatch() {
     () => doneCount.value + cachedCount.value + failedCount.value + unavailableCount.value,
   );
   const total = computed(() => Object.keys(progress.value).length);
+  /** The batch's video ids in original order — the source of truth for rendering the queue,
+   *  so a rehydrated batch (where the playlist source is gone) still shows its rows. */
+  const videoIds = computed(() => Object.keys(progress.value));
   /** Successful-only terminals — drives the archive availability check. */
   const successCount = computed(() => doneCount.value + cachedCount.value);
   const allTerminal = computed(
@@ -67,12 +123,41 @@ export function useDownloadBatch() {
     batchId.value && allTerminal.value && successCount.value > 0 ? archiveUrl(batchId.value) : '',
   );
 
+  /** Merge authoritative REST status without ever downgrading a terminal local entry. */
+  async function resync(
+    videoIds: string[],
+    sel: MediaSelection,
+    fmt: OutputFormat,
+    token: number,
+  ): Promise<void> {
+    try {
+      const states = await fetchStatus({ videoIds, selection: sel, format: fmt });
+      if (token !== subId) return; // a newer subscription superseded this resync
+      const next = { ...progress.value };
+      for (const s of states) {
+        const current = next[s.videoId];
+        if (current && TERMINAL_STEPS.has(current.step)) continue;
+        next[s.videoId] = s;
+      }
+      progress.value = next;
+    } catch {
+      // best-effort safety net; the live socket + server replay remain the primary path
+    }
+  }
+
   function subscribe(videoIds: string[], sel: MediaSelection, fmt: OutputFormat): void {
     teardownSocket();
+    const mySub = ++subId;
+    let firstConnect = true;
     socket = connectSocket();
     socket.on('connect', () => {
       wsConnected.value = true;
       socket?.emit('subscribe', { videoIds, selection: sel, format: fmt });
+      // On a RECONNECT (the initial connect already had its fetchStatus in start()/rehydrate),
+      // pull authoritative state via REST and merge so a terminal event missed while
+      // disconnected is recovered even if the server-side subscribe replay ever misses it.
+      if (!firstConnect) void resync(videoIds, sel, fmt, mySub);
+      firstConnect = false;
     });
     // socket.io auto-reconnects; flip the flag so the UI shows a reconnection banner.
     socket.on('disconnect', () => {
@@ -119,11 +204,47 @@ export function useDownloadBatch() {
       for (const s of states) next[s.videoId] = s;
       progress.value = next;
       subscribe(res.videoIds, sel, fmt);
+      // Persist enough to re-subscribe after a refresh (see rehydrate()).
+      savePersisted({ batchId: res.batchId, videoIds: res.videoIds, selection: sel, format: fmt });
     } catch (err) {
       checking.value = false;
       started.value = false;
       throw err;
     }
+  }
+
+  /** Restore a batch after a tab refresh: repaint from authoritative status and re-subscribe.
+   *  Called once on composable creation (client only). */
+  async function rehydrate(): Promise<void> {
+    const p = loadPersisted();
+    if (!p) return;
+    selection.value = p.selection;
+    format.value = p.format;
+    batchId.value = p.batchId;
+    started.value = true;
+    checking.value = false;
+    const seeded: Record<string, VideoProgress> = {};
+    for (const id of p.videoIds) {
+      seeded[id] = { videoId: id, selection: p.selection, format: p.format, step: 'queued' };
+    }
+    progress.value = seeded;
+    try {
+      const states = await fetchStatus({
+        videoIds: p.videoIds,
+        selection: p.selection,
+        format: p.format,
+      });
+      if (states.length === 0) {
+        reset(); // batch fully expired from the backend (WorkStore TTL) — nothing to resume
+        return;
+      }
+      const next: Record<string, VideoProgress> = { ...progress.value };
+      for (const s of states) next[s.videoId] = s;
+      progress.value = next;
+    } catch {
+      // Backend unreachable on load — keep the seeded view; the socket below resyncs on connect.
+    }
+    subscribe(p.videoIds, p.selection, p.format);
   }
 
   function reset(): void {
@@ -132,12 +253,16 @@ export function useDownloadBatch() {
     batchId.value = null;
     progress.value = {};
     teardownSocket();
+    clearPersisted();
   }
 
   // HMR / parent unmount: kill the socket without each consumer wiring onUnmounted.
   onScopeDispose(() => {
     teardownSocket();
   });
+
+  // Resume an in-flight batch from a prior tab session (client only; no-op on server/SSR).
+  void rehydrate();
 
   return {
     selection,
@@ -157,6 +282,7 @@ export function useDownloadBatch() {
     terminalCount,
     successCount,
     total,
+    videoIds,
     allTerminal,
     pending,
     archiveHref,

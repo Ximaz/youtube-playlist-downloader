@@ -57,13 +57,18 @@ export class HealthController {
       if (provider && check) checks[`provider:${provider.name}`] = check;
     }
 
-    const allOk = Object.values(checks).every((c) => c.ok);
+    // Infra (db/valkey/s3) is non-negotiable. Providers are ordered-fallback, so the backend
+    // is still ready as long as AT LEAST ONE provider answers — requiring ALL of them would
+    // pull every backend pod out of LB rotation on a single provider blip.
+    const infraOk = db.ok && valkey.ok && s3.ok;
+    const providersOk = providerChecks.length === 0 || providerChecks.some((c) => c.ok);
+    const ready = infraOk && providersOk;
     const report: ReadinessReport = {
-      status: allOk ? 'ready' : 'degraded',
+      status: ready ? 'ready' : 'degraded',
       service: 'backend',
       checks,
     };
-    if (!allOk) throw new ServiceUnavailableException(report);
+    if (!ready) throw new ServiceUnavailableException(report);
     return report;
   }
 

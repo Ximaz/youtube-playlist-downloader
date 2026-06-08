@@ -36,6 +36,13 @@ export class StorageService implements OnModuleInit {
       region: storage.region,
       forcePathStyle: storage.forcePathStyle,
       credentials: { accessKeyId: storage.accessKey, secretAccessKey: storage.secretKey },
+      // Bound every S3 call: a hung socket must not stall a worker until the OS TCP timeout.
+      // (The SDK builds the default Node handler from this options object — no extra import.)
+      requestHandler: {
+        connectionTimeout: storage.connectionTimeoutMs,
+        requestTimeout: storage.requestTimeoutMs,
+      },
+      maxAttempts: storage.maxAttempts,
     });
   }
 
@@ -78,8 +85,12 @@ export class StorageService implements OnModuleInit {
         this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: key })),
       );
       return { contentLength: res.ContentLength, contentType: res.ContentType };
-    } catch {
-      return null;
+    } catch (err) {
+      // A genuine 404 means "not cached" → null is correct. Any other error (S3 unreachable,
+      // 5xx, timeout) must propagate so the pre-filter doesn't misread an outage as a cache
+      // miss and re-download everything.
+      if (isNotFound(err)) return null;
+      throw err;
     }
   }
 
@@ -107,8 +118,10 @@ export class StorageService implements OnModuleInit {
       );
       const body = await res.Body?.transformToString();
       return body ? (JSON.parse(body) as T) : null;
-    } catch {
-      return null;
+    } catch (err) {
+      // Missing object → null; a real S3 outage propagates (see head()).
+      if (isNotFound(err)) return null;
+      throw err;
     }
   }
 
@@ -120,4 +133,11 @@ export class StorageService implements OnModuleInit {
       end();
     }
   }
+}
+
+/** True only for "object/bucket does not exist" (404 / NoSuchKey / NotFound). Everything else
+ *  — network error, timeout, 5xx, throttling — is a real failure that must not be swallowed. */
+function isNotFound(err: unknown): boolean {
+  const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+  return e?.$metadata?.httpStatusCode === 404 || e?.name === 'NotFound' || e?.name === 'NoSuchKey';
 }
