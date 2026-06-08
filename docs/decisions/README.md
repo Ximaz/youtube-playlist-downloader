@@ -179,3 +179,38 @@ reconnect storm or a brief Postgres blip doesn't hammer/deny the DB. **Trade-off
 for fallback robustness and deferred sticky-cookie affinity for `/socket.io` to the K8s ingress
 (Workstream F); a websocket-only client would remove even that need. One new dependency
 (`@socket.io/redis-adapter`), reusing Valkey.
+
+## 0017 — Provider tier: capacity-aware backpressure + a SHARED PO-token sidecar (not in-process)
+Scaling the provider tier is by REPLICAS (K8s/compose), not in-provider `--workers` — concurrency
+is owned by the backend's per-provider `pLimit` + the K8s HPA, so each provider stays a single
+process. Two backpressure tiers were added to both providers: **(1) honest upstream throttle** —
+a googlevideo `429`/bot-check now surfaces as a provider `429 RATE_LIMITED` + `Retry-After`
+(was a flat `502`), which the backend already backs off on and falls back; **(2) local saturation
+of the one expensive op** — youtubejs measures event-loop delay (`monitorEventLoopDelay`), ytdl
+tracks in-flight `_extract` vs the AnyIO threadpool — exposed on a new `/ready` (503 when degraded,
+so K8s drains the pod) and used to `429` NEW extraction while in-flight byte streaming keeps
+flowing. Not a fixed request cap — tied to actual capacity.
+
+**PO-tokens come from a shared `bgutil-ytdlp-pot-provider` sidecar, NOT in-process.** We first
+built the in-process path (youtubejs + bgutils-js + jsdom) and empirically found YouTube's
+BotGuard refuses to attest outside a real browser (`VM_ERROR APF:Failed`); the cold-start token
+needs a different identifier and is only partial. So generation runs in the maintained sidecar
+(`provider-pot`), and both providers use it ONLY on demand (per-video, automatic): ytdl via its
+`bgutil-ytdlp-pot-provider` yt-dlp plugin (`fetch_pot=if_required`, dormant until a token is
+needed — no change to the working no-token path), youtubejs via `POST /get_pot` then a WEB-client
+Innertube bound to the token (a bot-check escalation: detect → mint → retry → give-up + cooldown).
+The stack does NOT hard-depend on the sidecar — if it's down, escalation no-ops and the backend
+falls back between providers. **Trade-offs:** one extra container; the sidecar can still break on
+a BotGuard change (but it's maintained). **Verified:** the sidecar mints real tokens (852-char PO
+token via the youtubejs path) — the thing jsdom could not.
+
+**youtubejs `#parallelDownload` rewrite (fixed here).** Surfaced while verifying the provider
+tier: the youtubejs parallel path (files >2 MiB, the fallback streamer) stalled after ~1 segment.
+Two bugs: (1) it fired concurrent `info.download({range})` calls on ONE `info`, which youtubei.js
+can't do; (2) its `ReadableStream.pull()` returned WITHOUT enqueuing when a segment ended,
+assuming pull would be re-invoked — it isn't, so the stream hung after the first segment. Rewrote
+it to mirror ytdl: decipher the googlevideo URL ONCE (`format.decipher(player)`), then fetch byte
+ranges with independent `fetch` + `Range` (real per-segment retry + `AbortController`
+cancellation), and pull() now loops to advance across an exhausted segment until it enqueues.
+Verified: full 3.43 MB delivered (was 1 MiB-then-stall); single + ranged paths unchanged. ytdl
+(primary streamer) was never affected; this makes the youtubejs fallback stream large files too.

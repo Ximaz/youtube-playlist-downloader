@@ -95,6 +95,42 @@ _MIN_PARALLEL_SIZE = _SEGMENT_SIZE * 2
 _SEGMENT_RETRIES = max(0, int(os.environ.get("STREAM_SEGMENT_RETRIES", "2")))
 _SEGMENT_RETRY_BACKOFF = max(0.0, float(os.environ.get("STREAM_SEGMENT_RETRY_BACKOFF", "0.5")))
 
+# Tier 2 backpressure: yt-dlp `_extract` is the expensive op and runs in the AnyIO threadpool;
+# once in-flight extractions reach capacity, new ones queue. Track them and shed NEW extraction
+# (429 + Retry-After) at the cap, and report /ready degraded at DEGRADE_AT — so K8s drains the
+# pod and the backend backs off. Byte streaming (already past extraction) is never gated. This
+# guards the one resource that actually saturates, tied to capacity — not an arbitrary req cap.
+_EXTRACT_MAX_INFLIGHT = max(1, int(os.environ.get("EXTRACT_MAX_INFLIGHT", "40")))
+_EXTRACT_DEGRADE_AT = max(
+    1, int(os.environ.get("EXTRACT_DEGRADE_AT", str(max(1, int(_EXTRACT_MAX_INFLIGHT * 0.8)))))
+)
+
+# Substrings meaning YouTube is throttling THIS egress IP (vs a local fault) → 429 RATE_LIMITED,
+# the real "scale out / rotate IP" signal the backend backs off on.
+_RATE_LIMIT_HINTS = (
+    "429",
+    "too many requests",
+    "rate-limit",
+    "rate limit",
+    "rate_limit",
+    "throttl",
+)
+
+
+def _parse_retry_after(value: str | None) -> int:
+    """Clamp an upstream Retry-After (seconds) into a sane bound; default 5s when absent/bad."""
+    if value and value.strip().isdigit():
+        return min(30, max(1, int(value.strip())))
+    return 5
+
+
+# Shared bgutil POT provider sidecar. When set, the installed bgutil-ytdlp-pot-provider plugin
+# fetches a PO token from it whenever yt-dlp's chosen client/format requires one (per-video,
+# automatic; dormant otherwise — does NOT change the working no-token path). Unset ⇒ no token
+# fetching, so a video that newly requires one fails and the backend falls back to youtubejs.
+_POT_BASE_URL = (os.environ.get("POT_PROVIDER_BASE_URL") or "").rstrip("/")
+
+
 # Substrings in yt-dlp errors that mean "gone", not "broken".
 _NOT_FOUND_HINTS = (
     "private",
@@ -127,11 +163,33 @@ class YoutubeService:
         # Keyed by (url, frozenset of extra_opts items) so video and playlist extractions
         # never collide and a noplaylist variant doesn't overlap with extract_flat.
         self._extract_cache = _TTLCache(_EXTRACT_MAX_ENTRIES, _EXTRACT_TTL_SECONDS)
+        # In-flight blocking extractions (Tier 2 saturation signal). Mutated only on the event
+        # loop around run_in_threadpool, so a plain int is safe (async is cooperative).
+        self._extract_inflight = 0
+
+    @property
+    def extract_capacity(self) -> int:
+        return _EXTRACT_MAX_INFLIGHT
+
+    @property
+    def inflight_extracts(self) -> int:
+        return self._extract_inflight
+
+    @property
+    def saturated(self) -> bool:
+        """True once in-flight extractions reach the /ready degrade threshold."""
+        return self._extract_inflight >= _EXTRACT_DEGRADE_AT
 
     # --- blocking extraction (run in a threadpool) -----------------------------------------
 
     def _extract(self, url: str, extra_opts: dict[str, Any]) -> Info:
         opts = {"quiet": True, "no_warnings": True, "skip_download": True, **extra_opts}
+        if _POT_BASE_URL:
+            # Point the bgutil HTTP POT plugin at the sidecar. yt-dlp's default fetch_pot is
+            # "if_required", so a token is fetched only when a client/format actually needs one.
+            extractor_args = dict(opts.get("extractor_args") or {})
+            extractor_args.setdefault("youtubepot-bgutilhttp", {"base_url": [_POT_BASE_URL]})
+            opts["extractor_args"] = extractor_args
         with YoutubeDL(opts) as ydl:
             return ydl.sanitize_info(ydl.extract_info(url, download=False))  # type: ignore[no-any-return]
 
@@ -140,7 +198,20 @@ class YoutubeService:
         cached = self._extract_cache.get(key)
         if cached is not None:
             return cached  # type: ignore[no-any-return]
-        info = await run_in_threadpool(self._extract, url, extra_opts)
+        # Tier 2: shed a NEW extraction when the threadpool is at capacity (cache hits bypass —
+        # they're cheap and don't touch the threadpool). 429 + Retry-After → backend backs off.
+        if self._extract_inflight >= _EXTRACT_MAX_INFLIGHT:
+            raise ProviderError(
+                429,
+                "RATE_LIMITED",
+                f"provider saturated ({self._extract_inflight} extractions in flight)",
+                retry_after=1,
+            )
+        self._extract_inflight += 1
+        try:
+            info = await run_in_threadpool(self._extract, url, extra_opts)
+        finally:
+            self._extract_inflight -= 1
         self._extract_cache.set(key, info)
         return info
 
@@ -149,6 +220,8 @@ class YoutubeService:
         lowered = msg.lower()
         if any(hint in lowered for hint in _NOT_FOUND_HINTS):
             return ProviderError(404, not_found_code, msg)
+        if any(hint in lowered for hint in _RATE_LIMIT_HINTS):
+            return ProviderError(429, "RATE_LIMITED", msg, retry_after=5)
         return ProviderError(502, "UPSTREAM_ERROR", msg)
 
     # --- public API ------------------------------------------------------------------------
@@ -251,8 +324,12 @@ class YoutubeService:
         request = client.build_request("GET", fmt["url"], headers=req_headers)
         upstream = await client.send(request, stream=True)
         if upstream.status_code >= 400:
+            retry_after = _parse_retry_after(upstream.headers.get("retry-after"))
+            status = upstream.status_code
             await upstream.aclose()
-            raise ProviderError(502, "UPSTREAM_ERROR", f"upstream returned {upstream.status_code}")
+            if status == 429:
+                raise ProviderError(429, "RATE_LIMITED", "upstream rate-limited (429)", retry_after)
+            raise ProviderError(502, "UPSTREAM_ERROR", f"upstream returned {status}")
 
         container, ext = self._container_ext(fmt.get("ext"), kind)
         codec = self._codec(fmt, kind) or ""
@@ -356,6 +433,13 @@ class YoutubeService:
                                 if retryable and attempt < _SEGMENT_RETRIES:
                                     await asyncio.sleep(_SEGMENT_RETRY_BACKOFF * (2**attempt))
                                     continue
+                                if code == 429:
+                                    raise ProviderError(
+                                        429,
+                                        "RATE_LIMITED",
+                                        f"segment {i} rate-limited (429)",
+                                        _parse_retry_after(resp.headers.get("retry-after")),
+                                    )
                                 raise ProviderError(
                                     502, "UPSTREAM_ERROR", f"segment {i} -> {resp.status_code}"
                                 )

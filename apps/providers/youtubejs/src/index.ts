@@ -7,6 +7,7 @@ import { collectDefaultMetrics, Counter, Histogram, Registry } from 'prom-client
 
 import { ProviderError } from './errors.js';
 import { logger } from './logger.js';
+import { saturation } from './saturation.js';
 import { YoutubeService } from './youtube.service.js';
 
 const REQUEST_ID_HEADER = 'x-ypd-request-id';
@@ -50,7 +51,7 @@ app.use('*', async (c, next) => {
   const duration = (performance.now() - start) / 1000;
   requestDuration.observe({ path: pl }, duration);
   requestsTotal.inc({ path: pl, status: statusFamily(c.res.status) });
-  if (path === '/health' && c.res.status < 400) return;
+  if ((path === '/health' || path === '/ready') && c.res.status < 400) return;
   if (path === '/metrics') return;
   logger.info(
     {
@@ -73,6 +74,19 @@ app.get('/metrics', async (c) => {
 app.get('/health', (c) =>
   c.json({ status: 'ok', service: 'youtubejs', version: YoutubeService.libraryVersion }),
 );
+
+// Readiness: honest saturation signal so an orchestrator drains/stops routing to an overloaded
+// replica (and an HPA scales out). 503 when the event loop is behind budget; liveness stays on
+// /health. Kept dependency-free (no YouTube call) so probing never spends quota.
+app.get('/ready', (c) => {
+  const body = {
+    status: saturation.saturated ? 'degraded' : 'ready',
+    service: 'youtubejs',
+    lagMs: saturation.lagMs,
+    budgetMs: saturation.budgetMs,
+  };
+  return c.json(body, saturation.saturated ? 503 : 200);
+});
 
 app.get('/videos/:videoId', async (c) =>
   c.json(await service.getVideoMetadata(c.req.param('videoId'))),
@@ -103,6 +117,10 @@ app.onError((err, c) => {
     const fields = { error_code: err.code, status: err.status, msg: err.message };
     if (err.status >= 500) logger.error(fields, 'request_error');
     else logger.warn(fields, 'request_error');
+    // Honour Retry-After on rate-limit/saturation so the backend's 429 handling backs off.
+    if (err.retryAfterSeconds !== undefined) {
+      c.header('Retry-After', String(err.retryAfterSeconds));
+    }
     return c.json(
       { error: { code: err.code, message: err.message } },
       err.status as ContentfulStatusCode,

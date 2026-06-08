@@ -13,13 +13,20 @@ log = get_logger()
 
 
 class ProviderError(Exception):
-    """An error mapped to the contract's `{ "error": { code, message } }` envelope."""
+    """An error mapped to the contract's `{ "error": { code, message } }` envelope.
 
-    def __init__(self, status: int, code: str, message: str) -> None:
+    `retry_after` (seconds), when set on a RATE_LIMITED 429, is rendered as the `Retry-After`
+    header so the backend's 429 handling backs off before retrying / falling back.
+    """
+
+    def __init__(
+        self, status: int, code: str, message: str, retry_after: int | None = None
+    ) -> None:
         super().__init__(message)
         self.status = status
         self.code = code
         self.message = message
+        self.retry_after = retry_after
 
 
 def _envelope(status: int, code: str, message: str) -> JSONResponse:
@@ -33,7 +40,10 @@ def install_error_handlers(app: FastAPI) -> None:
             log.error("request_error", error_code=exc.code, status=exc.status, msg=exc.message)
         else:
             log.warning("request_error", error_code=exc.code, status=exc.status, msg=exc.message)
-        return _envelope(exc.status, exc.code, exc.message)
+        resp = _envelope(exc.status, exc.code, exc.message)
+        if exc.retry_after is not None:
+            resp.headers["Retry-After"] = str(exc.retry_after)
+        return resp
 
     @app.exception_handler(RequestValidationError)
     async def _validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:

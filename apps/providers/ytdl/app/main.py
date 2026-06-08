@@ -17,7 +17,7 @@ from prometheus_client import (
     Histogram,
     generate_latest,
 )
-from starlette.responses import Response, StreamingResponse
+from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from .errors import ProviderError, install_error_handlers
 from .logging_config import configure_logging, get_logger
@@ -99,9 +99,9 @@ async def log_requests(request: Request, call_next):  # type: ignore[no-untyped-
     _request_duration_seconds.labels(path=path_label).observe(duration)
     _requests_total.labels(path=path_label, status=_status_family(response.status_code)).inc()
 
-    # Skip successful /health probes — they fire on the healthcheck interval and only add
-    # noise; errors (status >= 400) are still logged so an unhealthy container is visible.
-    if request.url.path == "/health" and response.status_code < 400:
+    # Skip successful /health + /ready probes — they fire on the healthcheck/readiness interval
+    # and only add noise; errors (status >= 400) are still logged so a degraded container shows.
+    if request.url.path in ("/health", "/ready") and response.status_code < 400:
         return response
     if request.url.path == "/metrics":
         return response
@@ -122,6 +122,21 @@ async def log_requests(request: Request, call_next):  # type: ignore[no-untyped-
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok", "service": service.name, "version": service.library_version}
+
+
+@app.get("/ready")
+async def ready() -> Response:
+    # Readiness: honest saturation signal (in-flight extractions vs the threadpool capacity) so
+    # an orchestrator drains/stops routing to an overloaded replica and an HPA scales out. 503
+    # when degraded; liveness stays on /health. No YouTube call — probing never spends quota.
+    degraded = service.saturated
+    body = {
+        "status": "degraded" if degraded else "ready",
+        "service": service.name,
+        "inflightExtracts": service.inflight_extracts,
+        "extractCapacity": service.extract_capacity,
+    }
+    return JSONResponse(content=body, status_code=503 if degraded else 200)
 
 
 @app.get("/videos/{video_id}")

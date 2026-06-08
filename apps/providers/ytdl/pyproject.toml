@@ -10,6 +10,9 @@ dependencies = [
     "httpx==0.28.1",
     "structlog==25.5.0",
     "prometheus-client==0.22.1",
+    # yt-dlp plugin: fetches PO tokens from the shared bgutil POT provider sidecar when a
+    # client/format requires one (per-video, automatic). Dormant until YouTube demands a token.
+    "bgutil-ytdlp-pot-provider==1.3.1",
 ]
 
 [dependency-groups]

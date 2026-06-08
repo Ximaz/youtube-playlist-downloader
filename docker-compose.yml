@@ -137,6 +137,21 @@ services:
       retries: 10
       start_period: 15s
 
+  # ----------------------------------------------------- PO-token provider (shared)
+  # Maintained BotGuard PO-token generator (brainicism/bgutil-ytdlp-pot-provider). BOTH providers
+  # fetch a token from it ONLY when YouTube demands one (per-video, automatic): provider-ytdl via
+  # its yt-dlp plugin, provider-youtubejs via POST /get_pot. Internal-only. The stack does NOT
+  # hard-depend on it — PO-tokens are a fallback — so if it's down, token escalation simply no-ops
+  # and the providers serve as today. In-process generation (jsdom/BotGuard) doesn't attest
+  # reliably outside a real browser, which is why this runs as its own maintained service.
+  provider-pot:
+    image: brainicism/bgutil-ytdlp-pot-provider:1.3.1
+    restart: unless-stopped
+    expose:
+      - "4416"
+    networks:
+      - network-backend
+
   # ------------------------------------------------------------ Backend (API)
   # APP_ROLE=api: serves REST + the WebSocket gateway and ENQUEUES work, but runs NO BullMQ
   # workers — download/ffmpeg never contends with request latency. Owns Prisma migrations.

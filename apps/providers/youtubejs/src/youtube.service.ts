@@ -1,6 +1,8 @@
 import { Innertube, type Types } from 'youtubei.js';
 
 import { ProviderError, type ProviderErrorCode } from './errors.js';
+import { poTokenMinter } from './potoken.js';
+import { saturation } from './saturation.js';
 
 type Kind = 'audio' | 'video';
 
@@ -27,6 +29,13 @@ const STREAM_CLIENTS = (process.env.YOUTUBEJS_STREAM_CLIENTS ?? 'ANDROID_VR,IOS'
 const SEGMENT_SIZE = Math.max(1, Number(process.env.STREAM_SEGMENT_SIZE ?? 1024 * 1024));
 const SEGMENT_CONCURRENCY = Math.max(1, Number(process.env.STREAM_SEGMENT_CONCURRENCY ?? 4));
 const MIN_PARALLEL_SIZE = SEGMENT_SIZE * 2;
+// Per-segment retry for the direct ranged download (mirrors provider-ytdl): a single googlevideo
+// range can hit a transient throttle/RST — retry a few times before failing the whole stream.
+const SEGMENT_RETRIES = Math.max(0, Number(process.env.STREAM_SEGMENT_RETRIES ?? 2));
+const SEGMENT_RETRY_BACKOFF_MS = Math.max(
+  0,
+  Number(process.env.STREAM_SEGMENT_RETRY_BACKOFF ?? 0.5) * 1000,
+);
 
 /** Structural subset of youtubei.js `Format` — avoids fragile deep type imports. */
 interface YtFormat {
@@ -38,6 +47,12 @@ interface YtFormat {
   height?: number;
   fps?: number;
   content_length?: number;
+}
+
+/** A chosen stream format: the structural fields we read for headers/DTO, plus youtubei.js's
+ *  `decipher()` to resolve the final googlevideo URL so we can fetch byte ranges directly. */
+interface StreamFormat extends YtFormat {
+  decipher(player?: unknown): Promise<string>;
 }
 
 interface ThumbnailDto {
@@ -85,6 +100,11 @@ interface StreamResult {
   body: ReadableStream<Uint8Array>;
 }
 
+/** Why one stream-client attempt failed — lets stream() aggregate the most-informative error and
+ *  decide whether to escalate to a PO-token client (on `botcheck`). */
+type StreamFailure = 'sessionexpired' | 'botcheck' | 'noformat' | 'notplayable' | 'error';
+type StreamAttempt = { ok: StreamResult } | { failure: StreamFailure; error?: unknown };
+
 const CONTENT_TYPE: Record<string, string> = {
   'webm/audio': 'audio/webm',
   'mp4/audio': 'audio/mp4',
@@ -106,6 +126,26 @@ const NOT_FOUND_HINTS = [
   'members-only',
   'this video is not available',
 ];
+
+// Substrings / playability statuses that mean YouTube is demanding a PO-token / "prove you're
+// not a bot". The DEFAULT ANDROID_VR/IOS clients don't need a token today, so on these we
+// escalate per-video to a WEB client bound to a freshly-minted PO token (see potoken.ts).
+const BOT_CHECK_HINTS = [
+  'sign in to confirm',
+  "confirm you're not a bot",
+  'confirm you’re not a bot',
+  'not a bot',
+  'login_required',
+  'login required',
+  'po_token',
+  'po token',
+  'pot token',
+];
+
+// Substrings that mean YouTube is throttling THIS egress IP (vs a local fault). Surfaced as a
+// 429 RATE_LIMITED + Retry-After so the backend backs off and falls back to the other provider —
+// the real signal that a replica/IP needs to scale out or rotate.
+const RATE_LIMIT_HINTS = ['429', 'too many requests', 'rate limit', 'rate-limit', 'rate_limit'];
 
 // Substrings that mean the Innertube session is stale (expired token, signature mismatch,
 // session-changed). On these, we null the cached Innertube so the next call rebuilds it.
@@ -130,6 +170,11 @@ export class YoutubeService {
 
   #instance: Innertube | null = null;
   #creating: Promise<Innertube> | null = null;
+  // PO-token escalation: a WEB-client Innertube bound to a minted token, built lazily on the
+  // first bot-check and reused across videos until it fails (then rebuilt). Separate from the
+  // default instance so the cheap no-token path stays the norm.
+  #tokenized: Innertube | null = null;
+  #tokenizedCreating: Promise<Innertube> | null = null;
   // Caches yt.getInfo(videoId) by videoId for INFO_TTL_MS; trimmed to INFO_MAX_ENTRIES LRU.
   #infoCache = new Map<string, { ts: number; info: Awaited<ReturnType<Innertube['getInfo']>> }>();
 
@@ -156,9 +201,48 @@ export class YoutubeService {
     this.#infoCache.clear();
   }
 
+  /** Lazily build (and cache) a WEB-client Innertube bound to a minted PO token. Throws if a
+   *  token can't be obtained (minter in cooldown / BotGuard failure) — the caller then gives up
+   *  on that video and the backend falls back to the other provider. */
+  async #tokenizedInnertube(): Promise<Innertube> {
+    if (this.#tokenized) return this.#tokenized;
+    if (!this.#tokenizedCreating) {
+      const creating = (async () => {
+        const base = await this.#innertube();
+        const visitorData = base.session.context?.client?.visitorData;
+        if (!visitorData) throw new Error('no visitor data available to bind a PO token');
+        const { poToken } = await poTokenMinter.mint(visitorData);
+        return Innertube.create({ po_token: poToken, visitor_data: visitorData });
+      })();
+      this.#tokenizedCreating = creating;
+      creating.catch(() => {
+        if (this.#tokenizedCreating === creating) this.#tokenizedCreating = null;
+      });
+    }
+    this.#tokenized = await this.#tokenizedCreating;
+    return this.#tokenized;
+  }
+
+  #resetTokenized(): void {
+    this.#tokenized = null;
+    this.#tokenizedCreating = null;
+  }
+
+  #isBotCheck(err: unknown): boolean {
+    const m = (err instanceof Error ? err.message : String(err)).toLowerCase();
+    return BOT_CHECK_HINTS.some((hint) => m.includes(hint));
+  }
+
+  #isBotCheckStatus(info: { playability_status?: { status?: string; reason?: string } }): boolean {
+    const status = info.playability_status?.status ?? '';
+    const reason = (info.playability_status?.reason ?? '').toLowerCase();
+    return status === 'LOGIN_REQUIRED' || BOT_CHECK_HINTS.some((hint) => reason.includes(hint));
+  }
+
   // --- public API ------------------------------------------------------------------------
 
   async getVideoMetadata(videoId: string): Promise<VideoDto> {
+    this.#rejectIfSaturated();
     const info = await this.#getInfo(videoId);
     const basic = info.basic_info;
 
@@ -186,6 +270,7 @@ export class YoutubeService {
   }
 
   async getPlaylist(playlistId: string): Promise<PlaylistDto> {
+    this.#rejectIfSaturated();
     const yt = await this.#innertube();
     let page;
     try {
@@ -239,6 +324,9 @@ export class YoutubeService {
     if (rangeHeader && rangeHeader.includes(',')) {
       throw new ProviderError(416, 'BAD_REQUEST', 'multi-range Range requests not supported');
     }
+    // Shed a NEW stream's extraction when saturated; a ranged request is (usually) part of an
+    // already-started download, so don't reject those — only gate the un-ranged "open" call.
+    if (!rangeHeader) this.#rejectIfSaturated();
 
     const yt = await this.#innertube();
     // Track distinct per-client failure categories so the user/caller learns *why* every
@@ -247,71 +335,54 @@ export class YoutubeService {
     let sawNoFormat = false;
     let sawNetworkError: ProviderError | undefined;
     let sawSessionExpired = false;
+    let sawBotCheck = false;
     let lastError: unknown;
 
+    const record = (outcome: Exclude<StreamAttempt, { ok: StreamResult }>): void => {
+      if (outcome.error !== undefined) lastError = outcome.error;
+      switch (outcome.failure) {
+        case 'sessionexpired':
+          sawSessionExpired = true;
+          break;
+        case 'botcheck':
+          sawBotCheck = true;
+          break;
+        case 'noformat':
+          sawNoFormat = true;
+          break;
+        case 'notplayable':
+          sawNoPlayable = true;
+          break;
+        case 'error':
+          if (outcome.error instanceof ProviderError) sawNetworkError = outcome.error;
+          break;
+      }
+    };
+
     for (const client of STREAM_CLIENTS) {
-      let info: Awaited<ReturnType<Innertube['getBasicInfo']>>;
+      const outcome = await this.#attemptStreamClient(yt, videoId, kind, itag, rangeHeader, client);
+      if ('ok' in outcome) return outcome.ok;
+      record(outcome);
+    }
+
+    // Every default client hit a bot-check → escalate this video to a PO-token WEB client.
+    if (sawBotCheck) {
       try {
-        info = await yt.getBasicInfo(videoId, { client });
-      } catch (err) {
-        if (this.#isSessionExpired(err)) sawSessionExpired = true;
-        lastError = err;
-        continue;
-      }
-      const status = info.playability_status?.status;
-      if (status && !PLAYABLE_STATUSES.has(status)) {
-        sawNoPlayable = true;
-        lastError = new ProviderError(
-          404,
-          'VIDEO_NOT_FOUND',
-          info.playability_status?.reason || `video not playable: ${status}`,
+        const tokenizedYt = await this.#tokenizedInnertube();
+        const outcome = await this.#attemptStreamClient(
+          tokenizedYt,
+          videoId,
+          kind,
+          itag,
+          rangeHeader,
+          'WEB' as Types.InnerTubeClient,
         );
-        continue;
-      }
-
-      const chosen = this.#chooseForStream(info, kind, itag, client);
-      if (!chosen) {
-        sawNoFormat = true;
-        lastError = new ProviderError(404, 'FORMAT_NOT_FOUND', `no ${kind} format available`);
-        continue;
-      }
-
-      const { format, options } = chosen;
-      const { container, ext, codec } = describe(format, kind);
-      const total = format.content_length ?? 0;
-      const range = parseRange(rangeHeader, total);
-
-      const headers: Record<string, string> = {
-        // Only advertise Range support when we actually know the size — otherwise the client
-        // can't compute the suffix range space.
-        ...(total > 0 ? { 'Accept-Ranges': 'bytes' } : {}),
-        'Content-Type': CONTENT_TYPE[`${container}/${kind}`] ?? 'application/octet-stream',
-        'X-Format-Itag': String(format.itag),
-        'X-Format-Container': container,
-        'X-Format-Codec': codec ?? '',
-        'X-Format-Ext': ext,
-      };
-
-      try {
-        // A client Range is served as-is; a full download is parallelized across byte ranges.
-        if (range) {
-          const body = await info.download({ ...options, range });
-          headers['Content-Range'] = `bytes ${range.start}-${range.end}/${total || '*'}`;
-          headers['Content-Length'] = String(range.end - range.start + 1);
-          return { status: 206, headers, body };
-        }
-        if (total > MIN_PARALLEL_SIZE && SEGMENT_CONCURRENCY > 1) {
-          const body = this.#parallelDownload(info, options, total);
-          headers['Content-Length'] = String(total);
-          return { status: 200, headers, body };
-        }
-        const body = await info.download(options);
-        if (total) headers['Content-Length'] = String(total);
-        return { status: 200, headers, body };
+        if ('ok' in outcome) return outcome.ok;
+        record(outcome);
       } catch (err) {
-        if (err instanceof ProviderError) sawNetworkError = err;
+        // Minting unavailable (cooldown / BotGuard failure) — give up; backend falls back.
+        this.#resetTokenized();
         lastError = err;
-        continue;
       }
     }
 
@@ -330,13 +401,93 @@ export class YoutubeService {
     throw this.#classify(lastError, 'VIDEO_NOT_FOUND');
   }
 
+  /** One stream attempt against a single client. Returns the StreamResult on success or a
+   *  categorized failure (so stream() can aggregate + decide on PO-token escalation). The
+   *  download logic is identical for the default clients and the tokenized WEB retry. */
+  async #attemptStreamClient(
+    yt: Innertube,
+    videoId: string,
+    kind: Kind,
+    itag: string | undefined,
+    rangeHeader: string | undefined,
+    client: Types.InnerTubeClient,
+  ): Promise<StreamAttempt> {
+    let info: Awaited<ReturnType<Innertube['getBasicInfo']>>;
+    try {
+      info = await yt.getBasicInfo(videoId, { client });
+    } catch (err) {
+      if (this.#isSessionExpired(err)) return { failure: 'sessionexpired', error: err };
+      if (this.#isBotCheck(err)) return { failure: 'botcheck', error: err };
+      return { failure: 'error', error: err };
+    }
+    const status = info.playability_status?.status;
+    if (status && !PLAYABLE_STATUSES.has(status)) {
+      const reason = info.playability_status?.reason || `video not playable: ${status}`;
+      if (this.#isBotCheckStatus(info)) {
+        return { failure: 'botcheck', error: new ProviderError(404, 'VIDEO_NOT_FOUND', reason) };
+      }
+      return { failure: 'notplayable', error: new ProviderError(404, 'VIDEO_NOT_FOUND', reason) };
+    }
+
+    const chosen = this.#chooseForStream(info, kind, itag, client);
+    if (!chosen) {
+      return {
+        failure: 'noformat',
+        error: new ProviderError(404, 'FORMAT_NOT_FOUND', `no ${kind} format available`),
+      };
+    }
+
+    const { format, options } = chosen;
+    const { container, ext, codec } = describe(format, kind);
+    const total = format.content_length ?? 0;
+    const range = parseRange(rangeHeader, total);
+
+    const headers: Record<string, string> = {
+      // Only advertise Range support when we actually know the size — otherwise the client
+      // can't compute the suffix range space.
+      ...(total > 0 ? { 'Accept-Ranges': 'bytes' } : {}),
+      'Content-Type': CONTENT_TYPE[`${container}/${kind}`] ?? 'application/octet-stream',
+      'X-Format-Itag': String(format.itag),
+      'X-Format-Container': container,
+      'X-Format-Codec': codec ?? '',
+      'X-Format-Ext': ext,
+    };
+
+    try {
+      // A client Range is served as-is; a full download is parallelized across byte ranges.
+      if (range) {
+        const body = await info.download({ ...options, range });
+        headers['Content-Range'] = `bytes ${range.start}-${range.end}/${total || '*'}`;
+        headers['Content-Length'] = String(range.end - range.start + 1);
+        return { ok: { status: 206, headers, body } };
+      }
+      if (total > MIN_PARALLEL_SIZE && SEGMENT_CONCURRENCY > 1) {
+        // Resolve the deciphered googlevideo URL ONCE, then fetch byte ranges directly (like
+        // provider-ytdl). youtubei.js's info.download() can't be called concurrently on one
+        // `info` — that stalled the old parallel path after the first segment.
+        const url = await format.decipher(yt.session.player);
+        if (url) {
+          const body = this.#parallelDownload(url, total);
+          headers['Content-Length'] = String(total);
+          return { ok: { status: 200, headers, body } };
+        }
+        // No URL (no player / cipher issue) → fall through to a single full download.
+      }
+      const body = await info.download(options);
+      if (total) headers['Content-Length'] = String(total);
+      return { ok: { status: 200, headers, body } };
+    } catch (err) {
+      return { failure: 'error', error: err };
+    }
+  }
+
   // Chooses a streamable format from a single-client basic_info, preferring opus audio.
   #chooseForStream(
     info: Awaited<ReturnType<Innertube['getBasicInfo']>>,
     kind: Kind,
     itag: string | undefined,
     client: Types.InnerTubeClient,
-  ): { format: YtFormat; options: ChooseOptions } | null {
+  ): { format: StreamFormat; options: ChooseOptions } | null {
     const variants: ChooseOptions[] = itag
       ? [{ type: kind, quality: 'best', format: 'any', itag: Number(itag), client }]
       : kind === 'audio'
@@ -347,7 +498,7 @@ export class YoutubeService {
         : [{ type: 'video', quality: 'best', format: 'any', client }];
     for (const options of variants) {
       try {
-        return { format: info.chooseFormat(options) as unknown as YtFormat, options };
+        return { format: info.chooseFormat(options) as unknown as StreamFormat, options };
       } catch {
         // try the next variant
       }
@@ -355,34 +506,63 @@ export class YoutubeService {
     return null;
   }
 
-  // Full download split into ordered byte ranges fetched concurrently from one shared `info`
-  // (no extra getBasicInfo calls), to bypass YouTube's per-connection throttling.
-  #parallelDownload(
-    info: Awaited<ReturnType<Innertube['getBasicInfo']>>,
-    options: ChooseOptions,
-    total: number,
-  ): ReadableStream<Uint8Array> {
+  // Full download split into ordered byte ranges fetched DIRECTLY from the deciphered googlevideo
+  // URL — independent requests (like provider-ytdl), NOT youtubei.js's info.download() which can't
+  // run concurrently on one `info` (that stalled after the first segment). Memory stays ~one
+  // segment: each pending entry is the in-flight fetch; bodies are streamed in order, never
+  // buffered ahead. Raw fetch + AbortController also makes client-disconnect cancellation real.
+  #parallelDownload(url: string, total: number): ReadableStream<Uint8Array> {
     const ranges: Array<{ start: number; end: number }> = [];
     for (let start = 0; start < total; start += SEGMENT_SIZE) {
       ranges.push({ start, end: Math.min(start + SEGMENT_SIZE, total) - 1 });
     }
     let cancelled = false;
-    // Each pending entry is the segment's ReadableStream (not its buffered bytes), so
-    // memory stays at ~one segment worth instead of CONCURRENCY × SEGMENT_SIZE.
-    const fetchSeg = (r: { start: number; end: number }): Promise<ReadableStream<Uint8Array>> => {
-      const p = info.download({ ...options, range: r });
-      p.catch((err) => {
-        if (!cancelled) {
-          console.warn(
-            'parallelDownload segment failed:',
-            err instanceof Error ? err.message : err,
+    const inflight = new Set<AbortController>();
+
+    const fetchSeg = async (r: { start: number; end: number }, i: number): Promise<Response> => {
+      for (let attempt = 0; ; attempt++) {
+        const ac = new AbortController();
+        inflight.add(ac);
+        try {
+          const res = await fetch(url, {
+            headers: { Range: `bytes=${r.start}-${r.end}` },
+            signal: ac.signal,
+          });
+          if (res.status === 206 || res.ok) return res;
+          await res.body?.cancel().catch(() => undefined);
+          const retryable = res.status === 408 || res.status === 429 || res.status >= 500;
+          if (retryable && attempt < SEGMENT_RETRIES && !cancelled) {
+            await delay(SEGMENT_RETRY_BACKOFF_MS * 2 ** attempt);
+            continue;
+          }
+          throw new ProviderError(502, 'UPSTREAM_ERROR', `segment ${i} -> ${res.status}`);
+        } catch (err) {
+          if (cancelled || err instanceof ProviderError) throw err;
+          if (attempt < SEGMENT_RETRIES) {
+            await delay(SEGMENT_RETRY_BACKOFF_MS * 2 ** attempt);
+            continue;
+          }
+          const msg = err instanceof Error ? err.message : String(err);
+          throw new ProviderError(
+            502,
+            'UPSTREAM_ERROR',
+            `segment ${i} failed after retries: ${msg}`,
           );
         }
-      });
-      return p;
+      }
     };
-    const pending = new Map<number, Promise<ReadableStream<Uint8Array>>>();
-    ranges.slice(0, SEGMENT_CONCURRENCY).forEach((r, i) => pending.set(i, fetchSeg(r)));
+
+    const pending = new Map<number, Promise<Response>>();
+    const schedule = (i: number): void => {
+      const r = ranges[i];
+      if (!r) return;
+      const p = fetchSeg(r, i);
+      // Swallow rejection on this side-chain so a segment cancelled before it's read doesn't
+      // surface as an unhandled rejection; pull() still observes errors when it awaits `p`.
+      p.catch(() => undefined);
+      pending.set(i, p);
+    };
+    for (let i = 0; i < Math.min(SEGMENT_CONCURRENCY, ranges.length); i++) schedule(i);
     let nextIdx = 0;
     let currentReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
@@ -392,51 +572,54 @@ export class YoutubeService {
           controller.close();
           return;
         }
-        // Advance to the next segment if needed.
-        if (!currentReader) {
-          if (nextIdx >= ranges.length) {
-            controller.close();
-            return;
-          }
-          const cur = nextIdx++;
-          const promise = pending.get(cur);
-          if (!promise) {
-            controller.close();
-            return;
-          }
-          pending.delete(cur);
-          // Schedule the next-after segment so the pool stays warm without buffering its bytes.
-          const upcoming = ranges[cur + SEGMENT_CONCURRENCY];
-          if (upcoming && !cancelled) {
-            pending.set(cur + SEGMENT_CONCURRENCY, fetchSeg(upcoming));
+        // Loop until we ENQUEUE a chunk (or close/error). Returning from pull() without enqueueing
+        // does NOT reliably re-invoke it, so advancing across an exhausted segment must happen
+        // inside one pull() call — otherwise the stream stalls after the first segment.
+        for (;;) {
+          if (!currentReader) {
+            if (nextIdx >= ranges.length) {
+              controller.close();
+              return;
+            }
+            const cur = nextIdx++;
+            const promise = pending.get(cur);
+            if (!promise) {
+              controller.close();
+              return;
+            }
+            pending.delete(cur);
+            // Keep the pool warm: schedule the segment CONCURRENCY ahead, without buffering bytes.
+            if (!cancelled) schedule(cur + SEGMENT_CONCURRENCY);
+            try {
+              const res = await promise;
+              if (!res.body) {
+                controller.close();
+                return;
+              }
+              currentReader = res.body.getReader();
+            } catch (err) {
+              controller.error(err);
+              return;
+            }
           }
           try {
-            const seg = await promise;
-            currentReader = seg.getReader();
+            const { value, done } = await currentReader.read();
+            if (done) {
+              currentReader = null;
+              continue; // segment exhausted → advance to the next one in this same pull()
+            }
+            if (value && !cancelled) {
+              controller.enqueue(value);
+              return;
+            }
           } catch (err) {
             controller.error(err);
             return;
           }
         }
-        // Pull one chunk from the active segment. On end-of-segment, drop the reader so the
-        // next pull advances to the next segment.
-        try {
-          const { value, done } = await currentReader.read();
-          if (done) {
-            currentReader = null;
-            // No enqueue this turn; pull will be called again immediately because the
-            // controller is still hungry.
-            return;
-          }
-          if (value && !cancelled) controller.enqueue(value);
-        } catch (err) {
-          controller.error(err);
-        }
       },
       async cancel(): Promise<void> {
-        // Consumer aborted (client disconnect): drop the active reader + pending segments.
-        // youtubei.js doesn't expose per-request cancellation, so in-flight fetchSeg calls
-        // run to completion in the background — their results are discarded.
+        // Client disconnect: abort the active reader + every in-flight/pending segment fetch.
         cancelled = true;
         try {
           await currentReader?.cancel();
@@ -444,6 +627,8 @@ export class YoutubeService {
           // ignore
         }
         currentReader = null;
+        for (const ac of inflight) ac.abort();
+        inflight.clear();
         pending.clear();
       },
     });
@@ -470,12 +655,22 @@ export class YoutubeService {
         this.#resetInstance();
         throw new ProviderError(502, 'UPSTREAM_ERROR', (err as Error).message ?? 'session expired');
       }
-      throw this.#classify(err, 'VIDEO_NOT_FOUND');
+      // Bot-check on the default client → escalate this video to a PO-token WEB client.
+      if (this.#isBotCheck(err)) info = await this.#getInfoTokenized(videoId);
+      else throw this.#classify(err, 'VIDEO_NOT_FOUND');
     }
-    const status = info.playability_status?.status;
+    let status = info.playability_status?.status;
     if (status && !PLAYABLE_STATUSES.has(status)) {
-      const reason = info.playability_status?.reason || `video not playable: ${status}`;
-      throw new ProviderError(404, 'VIDEO_NOT_FOUND', reason);
+      // A LOGIN_REQUIRED / "not a bot" status is the other way a bot-check surfaces — retry once
+      // with the PO-token client before declaring the video unavailable.
+      if (this.#isBotCheckStatus(info)) {
+        info = await this.#getInfoTokenized(videoId);
+        status = info.playability_status?.status;
+      }
+      if (status && !PLAYABLE_STATUSES.has(status)) {
+        const reason = info.playability_status?.reason || `video not playable: ${status}`;
+        throw new ProviderError(404, 'VIDEO_NOT_FOUND', reason);
+      }
     }
     if (this.#infoCache.size >= INFO_MAX_ENTRIES) {
       const oldest = this.#infoCache.keys().next().value;
@@ -483,6 +678,28 @@ export class YoutubeService {
     }
     this.#infoCache.set(videoId, { ts: Date.now(), info });
     return info;
+  }
+
+  /** Re-fetch getInfo on the PO-token WEB client after a bot-check. A failure to obtain a token
+   *  surfaces as UPSTREAM_ERROR (retryable; backend falls back); a failure of the tokenized call
+   *  itself drops the cached tokenized instance so the next escalation rebuilds it. */
+  async #getInfoTokenized(videoId: string): Promise<Awaited<ReturnType<Innertube['getInfo']>>> {
+    let yt: Innertube;
+    try {
+      yt = await this.#tokenizedInnertube();
+    } catch (err) {
+      throw new ProviderError(
+        502,
+        'UPSTREAM_ERROR',
+        `PO-token escalation unavailable: ${(err as Error).message}`,
+      );
+    }
+    try {
+      return await yt.getInfo(videoId);
+    } catch (err) {
+      this.#resetTokenized();
+      throw this.#classify(err, 'VIDEO_NOT_FOUND');
+    }
   }
 
   #isSessionExpired(err: unknown): boolean {
@@ -518,7 +735,24 @@ export class YoutubeService {
     if (NOT_FOUND_HINTS.some((hint) => lowered.includes(hint))) {
       return new ProviderError(404, notFoundCode, message);
     }
+    if (RATE_LIMIT_HINTS.some((hint) => lowered.includes(hint))) {
+      return new ProviderError(429, 'RATE_LIMITED', message, 5);
+    }
     return new ProviderError(502, 'UPSTREAM_ERROR', message);
+  }
+
+  /** Tier 2: shed NEW extraction work when the event loop is saturated. In-flight byte
+   *  streaming is I/O-bound and unaffected. 429 + short Retry-After → the backend backs off and
+   *  may fall back; the same signal degrades /ready so K8s drains the pod. */
+  #rejectIfSaturated(): void {
+    if (saturation.saturated) {
+      throw new ProviderError(
+        429,
+        'RATE_LIMITED',
+        `provider saturated (event-loop p99 lag ${saturation.lagMs}ms > ${saturation.budgetMs}ms)`,
+        1,
+      );
+    }
   }
 }
 
@@ -526,6 +760,10 @@ export class YoutubeService {
 
 function dropUndefined<T extends object>(obj: Record<string, unknown>): T {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as T;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function mapCodec(codecs: string): string | undefined {
