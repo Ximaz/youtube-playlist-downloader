@@ -144,3 +144,38 @@ to the token. **Trade-off:** one `Session` row per anonymous browser (30-day coo
 periodic prune of account-less sessions older than N days is the GC follow-up. Stale cookies
 (e.g. a dev DB reset) self-heal: `/auth/me` omits `tier` when the session is gone, and the
 frontend re-mints via `POST /api/session`.
+
+## 0015 — One image, two roles: split the API and the BullMQ workers (`APP_ROLE`)
+ADR 0005 put the download/convert `WorkerHost` pools in the same process as the HTTP API +
+WebSocket gateway, so global download throughput was capped at one process's
+`DOWNLOAD_CONCURRENCY` and CPU-heavy ffmpeg contended with request latency. The backend now
+reads `APP_ROLE` (`api` | `worker` | `all`, default `all` for single-host/dev) from the same
+image: `DownloadModule.register()` registers the two processors ONLY for `worker`/`all`, and the
+gateway's QueueEvents→socket bridge runs ONLY for `api`/`all` (`AppConfigService.runsApi` /
+`runsWorkers`). compose runs `backend` (api) + `backend-worker` (worker) as separate containers;
+`docker compose up -d --scale backend-worker=N` makes throughput `N × DOWNLOAD_CONCURRENCY`,
+independent of the API tier. Progress still crosses the process boundary for free: a worker's
+`job.updateProgress` writes the BullMQ Valkey stream, which the api's QueueEvents reads and fans
+to its sockets (verified end-to-end). Workers skip Prisma migrations (the api/all role owns them,
+via the entrypoint) so N workers don't race; `lockDuration` is raised to 90s so a scaled-out pool
+doesn't false-stall a long download (BullMQ auto-renews the lock while active). **Trade-off:** an
+`api`-only process runs no workers, so a deployment MUST run at least one `worker` (or `all`) or
+jobs never drain; the worker still imports the full module graph (an idle Prisma connection) —
+a future refinement can trim it. No new dependency.
+
+## 0016 — Socket.IO Valkey adapter for a horizontally-scalable API tier
+The gateway used the default in-memory Socket.IO adapter, so rooms/emits were process-local; it
+only "worked" across instances by accident because every replica ran its own QueueEvents and
+re-emitted every event locally — fragile, O(N) duplicate work, and broken for any non-QueueEvents
+emit. With the api/worker split (ADR 0015) the api tier is meant to scale, so `main.ts` now wires
+`@socket.io/redis-adapter` (a `RedisIoAdapter` built on two iovalkey clients from the existing
+`CACHE_URL` — no new service) via `app.useWebSocketAdapter()`, **for the api role only** (workers
+serve no sockets). `server.to(room).emit(...)` is now cluster-correct for ALL emits across N api
+replicas (verified: the adapter's `socket.io-request/response` pub/sub channels go live in Valkey
+on subscribe). The Valkey ACL gains `+@pubsub` (PUBLISH/SUBSCRIBE) — the adapter needs it.
+Separately, the handshake's `Session` lookup is now Valkey-cached (`ws:sess:<id>`, 60s) so a
+reconnect storm or a brief Postgres blip doesn't hammer/deny the DB. **Trade-off:** the engine.io
+*polling* transport still needs sticky sessions across replicas — kept `['websocket','polling']`
+for fallback robustness and deferred sticky-cookie affinity for `/socket.io` to the K8s ingress
+(Workstream F); a websocket-only client would remove even that need. One new dependency
+(`@socket.io/redis-adapter`), reusing Valkey.

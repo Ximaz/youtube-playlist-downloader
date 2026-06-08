@@ -19,7 +19,11 @@ import { type WorkResult, WorkStore } from './work-store.service';
  *  video or hands the originals off to the convert pool, then frees its slot immediately.
  *  Concurrency is set in onModuleInit from AppConfigService — the @Processor decorator's
  *  static option is read at decorator-time, which would force us back to process.env. */
-@Processor(DOWNLOAD_QUEUE)
+// lockDuration 90s: BullMQ auto-renews the lock while a job is active, so long (hour-plus)
+// downloads are fine; this only sets how long after a worker CRASH the job is considered stalled
+// and re-picked by another worker replica. Higher than the 30s default to tolerate brief
+// event-loop pressure without false stalls once the pool is scaled out.
+@Processor(DOWNLOAD_QUEUE, { lockDuration: 90_000 })
 export class DownloadProcessor extends WorkerHost implements OnModuleInit {
   private readonly logger = new Logger(DownloadProcessor.name);
 

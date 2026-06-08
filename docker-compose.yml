@@ -60,11 +60,12 @@ services:
     # DEBUG, REPLICAOF, etc.) so a compromised provider can't enumerate sessions or wipe state.
     # +info is re-added after -@dangerous because BullMQ/iovalkey call INFO on every
     # connection prep to detect the server version; +client (instead of +client|setname)
-    # lets BullMQ also call CLIENT GETNAME / NO-EVICT for its worker bookkeeping.
+    # lets BullMQ also call CLIENT GETNAME / NO-EVICT for its worker bookkeeping; +@pubsub is
+    # required by the Socket.IO Valkey adapter (PUBLISH/SUBSCRIBE for cross-replica room fan-out).
     command:
       - "sh"
       - "-c"
-      - 'exec valkey-server --user default off --user "$$VALKEY_USERNAME" on ">$$VALKEY_PASSWORD" "~*" "&*" "+@read" "+@write" "+@list" "+@stream" "+@hash" "+@set" "+@sortedset" "+@scripting" "+@connection" "+client" "-@dangerous" "+info"'
+      - 'exec valkey-server --user default off --user "$$VALKEY_USERNAME" on ">$$VALKEY_PASSWORD" "~*" "&*" "+@read" "+@write" "+@list" "+@stream" "+@hash" "+@set" "+@sortedset" "+@scripting" "+@connection" "+client" "-@dangerous" "+info" "+@pubsub"'
     volumes:
       - cache-data:/data
     ports:
@@ -136,7 +137,9 @@ services:
       retries: 10
       start_period: 15s
 
-  # ---------------------------------------------------------------- Backend
+  # ------------------------------------------------------------ Backend (API)
+  # APP_ROLE=api: serves REST + the WebSocket gateway and ENQUEUES work, but runs NO BullMQ
+  # workers — download/ffmpeg never contends with request latency. Owns Prisma migrations.
   backend:
     build:
       context: .
@@ -145,11 +148,49 @@ services:
     # Backend owns its full config (incl. CACHE_URL, DATABASE_URL, S3_* client settings).
     env_file:
       - ./secrets/backend/.env
+    environment:
+      APP_ROLE: api
     # Give NestJS shutdown hooks time to drain BullMQ workers + close Prisma/Valkey before
     # Docker SIGKILLs. With download retries (attempts:3) a worst-case download cycle is ~25s.
     stop_grace_period: 30s
     ports:
       - "${BIND_HOST:-127.0.0.1}:${BACKEND_PORT:-3000}:3000"
+    depends_on:
+      storage:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+      database:
+        condition: service_healthy
+      provider-ytdl:
+        condition: service_healthy
+      provider-youtubejs:
+        condition: service_healthy
+    networks:
+      - network-backend
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+
+  # --------------------------------------------------------- Backend (Worker)
+  # APP_ROLE=worker: runs the download + convert BullMQ pools off the SHARED Valkey queue and
+  # nothing user-facing (the gateway stays inert). Same image as `backend`; scale horizontally
+  # with `docker compose up -d --scale backend-worker=N` — global throughput becomes
+  # N × DOWNLOAD_CONCURRENCY, independent of the API tier. No published port (internal only);
+  # skips migrations (the API role owns them).
+  backend-worker:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./secrets/backend/.env
+    environment:
+      APP_ROLE: worker
+    stop_grace_period: 30s
     depends_on:
       storage:
         condition: service_healthy

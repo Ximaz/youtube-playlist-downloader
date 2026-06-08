@@ -11,11 +11,18 @@ import { roomForWork, type VideoProgress, workJobId, WorkSelectorSchema } from '
 import { QueueEvents, type Queue } from 'bullmq';
 import type { Server, Socket } from 'socket.io';
 
+import { CacheService } from '../cache/cache.service';
 import { AppConfigService } from '../config/app-config.service';
 import { WorkStore } from '../download/work-store.service';
 import { CONVERT_QUEUE, DOWNLOAD_QUEUE } from '../jobs/job.types';
 import { parseRedisUrl } from '../jobs/redis-connection';
 import { PrismaService } from '../prisma/prisma.service';
+
+/** Cache a validated session id in Valkey for this long so a WS reconnect storm doesn't hit
+ *  Postgres on every handshake (and a brief DB blip doesn't drop all realtime). Short so a
+ *  sign-out's row delete takes effect quickly; the client tears the socket down on sign-out
+ *  anyway, and progress data is low-sensitivity. */
+const WS_SESSION_TTL_SECONDS = 60;
 
 /**
  * No `cors:` option needed — the backend is reached only over the internal Docker network
@@ -31,11 +38,17 @@ export class RealtimeGateway implements OnModuleInit, OnModuleDestroy {
     private readonly config: AppConfigService,
     private readonly store: WorkStore,
     private readonly prisma: PrismaService,
+    private readonly cache: CacheService,
     @InjectQueue(DOWNLOAD_QUEUE) private readonly downloadQueue: Queue,
     @InjectQueue(CONVERT_QUEUE) private readonly convertQueue: Queue,
   ) {}
 
   onModuleInit(): void {
+    // Worker-role processes serve no WebSocket clients (the BFF proxies sockets to the API tier
+    // only) and the progress fan-out runs here, so the gateway stays fully inert on a worker:
+    // no handshake middleware, no QueueEvents listeners (avoids redundant O(N) stream reads).
+    if (!this.config.runsApi) return;
+
     // Token auth on the handshake: only clients carrying a valid session token can connect.
     // The Nuxt BFF proxy resolves its httpOnly cookie to the backend session token and injects
     // it as `Authorization: Bearer <token>` on the upstream handshake (it also accepts the
@@ -45,11 +58,7 @@ export class RealtimeGateway implements OnModuleInit, OnModuleDestroy {
       try {
         const sessionId = handshakeToken(socket);
         if (!sessionId) return next(new Error('unauthorized'));
-        const exists = await this.prisma.session.findUnique({
-          where: { id: sessionId },
-          select: { id: true },
-        });
-        if (!exists) return next(new Error('unauthorized'));
+        if (!(await this.#sessionValid(sessionId))) return next(new Error('unauthorized'));
         (socket.data as { sessionId?: string }).sessionId = sessionId;
         next();
       } catch (err) {
@@ -126,6 +135,20 @@ export class RealtimeGateway implements OnModuleInit, OnModuleDestroy {
         if (cv) client.emit('video:progress', cv);
       }),
     );
+  }
+
+  /** Session validity check for the handshake, Valkey-cached so a reconnect storm (or a brief
+   *  Postgres blip) doesn't hammer the DB on every connect. Caches only positive results, with
+   *  a short TTL so a deleted session stops being accepted quickly. */
+  async #sessionValid(sessionId: string): Promise<boolean> {
+    if (await this.cache.get(`ws:sess:${sessionId}`)) return true;
+    const exists = await this.prisma.session.findUnique({
+      where: { id: sessionId },
+      select: { id: true },
+    });
+    if (!exists) return false;
+    await this.cache.set(`ws:sess:${sessionId}`, '1', WS_SESSION_TTL_SECONDS);
+    return true;
   }
 
   /** Look up the BullMQ job by its deterministic id. If it's in flight and has a recorded

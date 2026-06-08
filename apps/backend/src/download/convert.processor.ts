@@ -11,7 +11,9 @@ import { type WorkResult, WorkStore } from './work-store.service';
 /** Convert pool: pulls the originals back from S3 and runs ffmpeg. Independent of the
  *  download pool, so converted/merged batches process download + convert concurrently.
  *  Concurrency set in onModuleInit from AppConfigService (see DownloadProcessor note). */
-@Processor(CONVERT_QUEUE)
+// lockDuration 90s — see DownloadProcessor: auto-renewed while active, so long ffmpeg jobs are
+// fine; this is the post-crash re-pick window once the convert pool is scaled across replicas.
+@Processor(CONVERT_QUEUE, { lockDuration: 90_000 })
 export class ConvertProcessor extends WorkerHost implements OnModuleInit {
   private readonly logger = new Logger(ConvertProcessor.name);
 

@@ -11,6 +11,7 @@ import { cleanupOpenApiDoc, ZodValidationPipe } from 'nestjs-zod';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/all-exceptions.filter';
 import { AppConfigService } from './config/app-config.service';
+import { RedisIoAdapter } from './realtime/redis-io.adapter';
 
 const REQUEST_ID_HEADER = 'x-ypd-request-id';
 
@@ -36,6 +37,16 @@ async function bootstrap(): Promise<void> {
   // @nestjs/bullmq's worker.close() never fire on SIGTERM — in-flight jobs get SIGKILL'd
   // and dangling connections leak on every deploy.
   app.enableShutdownHooks();
+
+  // Cross-replica WebSocket fan-out: only the API role serves sockets, so only it needs the
+  // Valkey-backed Socket.IO adapter. Must be set before listen() (the gateway's io server is
+  // created during init). Reuses CACHE_URL — no new service.
+  if (config.runsApi) {
+    const ioAdapter = new RedisIoAdapter(app, config.cache.url);
+    await ioAdapter.connect();
+    app.useWebSocketAdapter(ioAdapter);
+    logger.log('Socket.IO Valkey adapter enabled (cross-replica room fan-out)');
+  }
 
   // No CORS / cookie middleware: the backend is a pure token API reached only over the internal
   // Docker network by the Nuxt BFF proxy (never a browser), and auth rides the `Authorization`
@@ -69,6 +80,10 @@ async function bootstrap(): Promise<void> {
   SwaggerModule.setup('docs', app, doc);
 
   await app.listen(config.port, '0.0.0.0');
+  logger.log(
+    `YPD backend listening on :${config.port} — role=${config.appRole} ` +
+      `(workers=${config.runsWorkers ? 'on' : 'off'}, api=${config.runsApi ? 'on' : 'off'})`,
+  );
 }
 
 void bootstrap();

@@ -21,7 +21,7 @@ import { StorageModule } from './storage/storage.module';
     JobsModule,
     MetadataModule,
     RealtimeModule,
-    DownloadModule,
+    DownloadModule.register(),
     AuthModule,
     ObservabilityModule,
     HealthModule,

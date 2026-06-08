@@ -11,12 +11,14 @@
 
 set -eu
 
-if [ "${MIGRATE_ON_START:-true}" = "true" ]; then
+if [ "${APP_ROLE:-all}" = "worker" ]; then
+  echo "[entrypoint] APP_ROLE=worker — skipping migrations (the api/all role owns them)"
+elif [ "${MIGRATE_ON_START:-true}" = "true" ]; then
   echo "[entrypoint] applying Prisma migrations…"
   ./node_modules/.bin/prisma migrate deploy
 else
   echo "[entrypoint] MIGRATE_ON_START=false — skipping prisma migrate deploy"
 fi
 
-echo "[entrypoint] starting Nest…"
+echo "[entrypoint] starting Nest (role=${APP_ROLE:-all})…"
 exec node dist/main.js
