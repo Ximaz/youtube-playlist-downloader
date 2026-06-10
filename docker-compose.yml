@@ -61,11 +61,14 @@ services:
     # +info is re-added after -@dangerous because BullMQ/iovalkey call INFO on every
     # connection prep to detect the server version; +client (instead of +client|setname)
     # lets BullMQ also call CLIENT GETNAME / NO-EVICT for its worker bookkeeping; +@pubsub is
-    # required by the Socket.IO Valkey adapter (PUBLISH/SUBSCRIBE for cross-replica room fan-out).
+    # required by the Socket.IO Valkey adapter (PUBLISH/SUBSCRIBE for cross-replica room fan-out);
+    # +client|list is re-added after -@dangerous (which strips it) so the API's worker-fleet metric
+    # (bullmq_workers_connected, via BullMQ queue.getWorkers() → CLIENT LIST) works. CLIENT LIST only
+    # enumerates connection metadata, not session keys, and the user is internal to backend/worker.
     command:
       - "sh"
       - "-c"
-      - 'exec valkey-server --user default off --user "$$VALKEY_USERNAME" on ">$$VALKEY_PASSWORD" "~*" "&*" "+@read" "+@write" "+@list" "+@stream" "+@hash" "+@set" "+@sortedset" "+@scripting" "+@connection" "+client" "-@dangerous" "+info" "+@pubsub"'
+      - 'exec valkey-server --user default off --user "$$VALKEY_USERNAME" on ">$$VALKEY_PASSWORD" "~*" "&*" "+@read" "+@write" "+@list" "+@stream" "+@hash" "+@set" "+@sortedset" "+@scripting" "+@connection" "+client" "-@dangerous" "+info" "+@pubsub" "+client|list"'
     volumes:
       - cache-data:/data
     ports:
@@ -153,8 +156,8 @@ services:
       - network-backend
 
   # ------------------------------------------------------------ Backend (API)
-  # APP_ROLE=api: serves REST + the WebSocket gateway and ENQUEUES work, but runs NO BullMQ
-  # workers — download/ffmpeg never contends with request latency. Owns Prisma migrations.
+  # Serves REST + the WebSocket gateway and ENQUEUES work, but runs NO BullMQ workers — its own lean
+  # image (apps/backend/Dockerfile: no ffmpeg, no download/convert pools). Owns Prisma migrations.
   backend:
     build:
       context: .
@@ -163,10 +166,8 @@ services:
     # Backend owns its full config (incl. CACHE_URL, DATABASE_URL, S3_* client settings).
     env_file:
       - ./secrets/backend/.env
-    environment:
-      APP_ROLE: api
-    # Give NestJS shutdown hooks time to drain BullMQ workers + close Prisma/Valkey before
-    # Docker SIGKILLs. With download retries (attempts:3) a worst-case download cycle is ~25s.
+    # Give NestJS shutdown hooks time to close the WebSocket gateway + Prisma/Valkey cleanly before
+    # Docker SIGKILLs (the heavy BullMQ drain now happens in the worker container).
     stop_grace_period: 30s
     ports:
       - "${BIND_HOST:-127.0.0.1}:${BACKEND_PORT:-3000}:3000"
@@ -191,27 +192,23 @@ services:
       start_period: 30s
 
   # --------------------------------------------------------- Backend (Worker)
-  # APP_ROLE=worker: runs the download + convert BullMQ pools off the SHARED Valkey queue and
-  # nothing user-facing (the gateway stays inert). Same image as `backend`; scale horizontally
-  # with `docker compose up -d --scale backend-worker=N` — global throughput becomes
-  # N × DOWNLOAD_CONCURRENCY, independent of the API tier. No published port (internal only);
-  # skips migrations (the API role owns them).
+  # Runs the download + convert BullMQ pools off the SHARED Valkey queue and nothing user-facing.
+  # Its own lean image (apps/worker/Dockerfile: ffmpeg, but no Prisma/Swagger/Socket.IO). Scale
+  # horizontally with `docker compose up -d --scale backend-worker=N` — global throughput becomes
+  # N × DOWNLOAD_CONCURRENCY, independent of the API tier. No published port (internal only); runs no
+  # migrations and needs no Postgres (the API image owns the DB).
   backend-worker:
     build:
       context: .
-      dockerfile: apps/backend/Dockerfile
+      dockerfile: apps/worker/Dockerfile
     restart: unless-stopped
     env_file:
       - ./secrets/backend/.env
-    environment:
-      APP_ROLE: worker
     stop_grace_period: 30s
     depends_on:
       storage:
         condition: service_healthy
       cache:
-        condition: service_healthy
-      database:
         condition: service_healthy
       provider-ytdl:
         condition: service_healthy

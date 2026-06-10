@@ -26,6 +26,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @ypd/shared build
+      - run: pnpm --filter @ypd/backend-core build
       - run: pnpm -r format:check
       - run: pnpm -r typecheck
       - run: pnpm -r --if-present lint
@@ -53,6 +54,7 @@ jobs:
       matrix:
         image:
           - { name: backend, context: ., dockerfile: apps/backend/Dockerfile }
+          - { name: worker, context: ., dockerfile: apps/worker/Dockerfile }
           - { name: frontend, context: ., dockerfile: apps/frontend/Dockerfile }
           - { name: provider-ytdl, context: apps/providers/ytdl, dockerfile: Dockerfile }
           - { name: provider-youtubejs, context: apps/providers/youtubejs, dockerfile: Dockerfile }
@@ -103,4 +105,5 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @ypd/shared build
+      - run: pnpm --filter @ypd/backend-core build
       - run: pnpm -r --if-present test

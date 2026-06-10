@@ -51,6 +51,30 @@ export class MetricsService implements OnModuleInit {
     labelNames: ['queue', 'state'],
   });
 
+  // Worker capacity signal (per worker instance — Prometheus distinguishes pods by target labels).
+  // active/concurrency = utilization; aggregate across pods in PromQL for fleet saturation, which a
+  // KEDA/HPA scaler consumes (the worker pools are pull-based, so this drives autoscaling, not LB
+  // routing). Only the worker image populates these; the API's /metrics simply never emits them.
+  readonly workerActive = new Gauge({
+    name: 'bullmq_worker_active',
+    help: 'Jobs currently being processed by THIS worker instance, per pool.',
+    labelNames: ['pool'],
+  });
+
+  readonly workerConcurrency = new Gauge({
+    name: 'bullmq_worker_concurrency',
+    help: 'Configured max concurrent jobs for THIS worker instance, per pool.',
+    labelNames: ['pool'],
+  });
+
+  // Fleet size: how many worker instances are currently connected to each queue (via BullMQ's
+  // client tracking). Populated on the API side, where the queues are injected for enqueue.
+  readonly workersConnected = new Gauge({
+    name: 'bullmq_workers_connected',
+    help: 'Worker instances currently connected to each BullMQ queue (fleet size).',
+    labelNames: ['queue'],
+  });
+
   onModuleInit(): void {
     // Default Node + process metrics (event-loop lag, GC, memory, fd counts).
     collectDefaultMetrics({ register: this.registry });
@@ -60,6 +84,9 @@ export class MetricsService implements OnModuleInit {
       this.contractViolations,
       this.s3OpDuration,
       this.bullmqQueueDepth,
+      this.workerActive,
+      this.workerConcurrency,
+      this.workersConnected,
     ];
     for (const m of customs) this.registry.registerMetric(m);
   }

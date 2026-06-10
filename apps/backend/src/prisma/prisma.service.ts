@@ -1,8 +1,7 @@
 import { Injectable, Logger, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
-
-import { AppConfigService } from '../config/app-config.service';
+import { AppConfigService } from '@ypd/backend-core';
 
 /**
  * Prisma 7 with the @prisma/adapter-pg driver. The connection URL lives on AppConfig

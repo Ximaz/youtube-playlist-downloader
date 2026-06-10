@@ -145,7 +145,7 @@ periodic prune of account-less sessions older than N days is the GC follow-up. S
 (e.g. a dev DB reset) self-heal: `/auth/me` omits `tier` when the session is gone, and the
 frontend re-mints via `POST /api/session`.
 
-## 0015 — One image, two roles: split the API and the BullMQ workers (`APP_ROLE`)
+## 0015 — One image, two roles: split the API and the BullMQ workers (`APP_ROLE`) — superseded by 0018
 ADR 0005 put the download/convert `WorkerHost` pools in the same process as the HTTP API +
 WebSocket gateway, so global download throughput was capped at one process's
 `DOWNLOAD_CONCURRENCY` and CPU-heavy ffmpeg contended with request latency. The backend now
@@ -214,3 +214,28 @@ ranges with independent `fetch` + `Range` (real per-segment retry + `AbortContro
 cancellation), and pull() now loops to advance across an exhausted segment until it enqueues.
 Verified: full 3.43 MB delivered (was 1 MiB-then-stall); single + ranged paths unchanged. ytdl
 (primary streamer) was never affected; this makes the youtubejs fallback stream large files too.
+
+## 0018 — Physical API/worker split: two images (`ypd-backend`, `ypd-worker`) sharing `@ypd/backend-core`
+ADR 0015 ran the API and the BullMQ pools from ONE image gated by `APP_ROLE` (`api|worker|all`), so
+both tiers shipped the full dependency surface (ffmpeg, Prisma engines, Swagger, Socket.IO) regardless
+of role. The split is now **physical**: `apps/backend` builds `ypd-backend` (HTTP REST + WebSocket
+gateway + Prisma migrations + ENQUEUE) and a new `apps/worker` builds `ypd-worker` (the download/convert
+BullMQ pools + ffmpeg + S3, with a minimal HTTP surface for `/health` + `/ready` + `/metrics` only). The
+image now IS the role — **`APP_ROLE`/`all` and `runsApi`/`runsWorkers` are deleted**; local dev runs both
+containers (compose already did). Shared NestJS infra (config, cache, storage, jobs/BullMQ connection,
+providers, metadata service, `WorkStore`, deliverable helpers, metrics) moved to a new
+`packages/backend-core` library imported by both apps; `packages/shared` stays pure Zod types (the
+frontend depends on it, so it must not pull in NestJS/aws-sdk). This is a genuine slim-down: the API
+image drops ffmpeg (archive zips stream from S3 via `archiver`, no transcode); the worker image drops the
+entire Prisma/pg stack (no worker code path touches Postgres — its `/ready` checks valkey + s3 +
+providers only), Swagger, Socket.IO, archiver and google-auth. Cross-process correctness is unchanged:
+the enqueue→process bridge runs over the SHARED Valkey queue (`CACHE_URL`), `WorkStore` results are
+Valkey-backed (written by the worker, read by the API), and worker `job.updateProgress` still feeds the
+API's QueueEvents→Socket.IO fan-out. `backend-core` declares the framework packages (NestJS, bullmq,
+reflect-metadata, rxjs, zod) as **peerDependencies** so — with this repo's exact version pinning — pnpm
+dedupes a single NestJS instance across both apps (no duplicate-DI-token hazard). Migrations stay
+API-owned (the worker entrypoint runs none). CI builds both images; the lint/typecheck + test jobs build
+`@ypd/backend-core` right after `@ypd/shared`. **Trade-off:** one more shared package + a second
+image/Dockerfile to maintain, and `provider-client` needs an explicit `Readable.fromWeb(... as ...)` cast
+because backend-core's `@aws-sdk`-importing typecheck pulls the DOM `ReadableStream` into scope.
+**Supersedes ADR 0015.**

@@ -1,16 +1,14 @@
 import { Module } from '@nestjs/common';
+import { MetadataModule as MetadataCoreModule } from '@ypd/backend-core';
 
-import { ProvidersModule } from '../providers/providers.module';
-import { MetadataService } from './metadata.service';
 import { PlaylistsController } from './playlists.controller';
 import { VideosController } from './videos.controller';
 
-// One controller per resource preserves the existing GET /videos/:id and GET /playlists/:id
-// URLs (no client churn) while giving each path its own focused file.
+// API HTTP surface for metadata: GET /videos/:id and GET /playlists/:id. The cache-aside
+// MetadataService is provided by backend-core's MetadataModule (also used by the worker pipeline);
+// this module only adds the two read-only controllers.
 @Module({
-  imports: [ProvidersModule],
+  imports: [MetadataCoreModule],
   controllers: [VideosController, PlaylistsController],
-  providers: [MetadataService],
-  exports: [MetadataService],
 })
 export class MetadataModule {}

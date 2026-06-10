@@ -1,11 +1,9 @@
 import { Controller, Get, Header, Res } from '@nestjs/common';
-import { ApiExcludeController } from '@nestjs/swagger';
 import { MetricsService } from '@ypd/backend-core';
 import type { Response } from 'express';
 
-/** Plain-text Prometheus exposition at `/metrics`. Excluded from Swagger — it's an
- *  operational endpoint, not an API surface. */
-@ApiExcludeController()
+/** Plain-text Prometheus exposition at `/metrics`. The worker has no Swagger, so unlike the API's
+ *  metrics controller this needs no `@ApiExcludeController`. */
 @Controller('metrics')
 export class MetricsController {
   constructor(private readonly metrics: MetricsService) {}

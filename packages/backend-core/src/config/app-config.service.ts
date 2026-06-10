@@ -3,7 +3,6 @@ import { ConfigService } from '@nestjs/config';
 
 import type {
   AppConfig,
-  AppRole,
   CacheConfig,
   GoogleOAuthConfig,
   ProvidersConfig,
@@ -17,20 +16,6 @@ export class AppConfigService {
 
   get port(): number {
     return this.config.get('port', { infer: true });
-  }
-
-  get appRole(): AppRole {
-    return this.config.get('appRole', { infer: true });
-  }
-
-  /** True when this process runs the BullMQ worker pools (worker or all). */
-  get runsWorkers(): boolean {
-    return this.appRole === 'worker' || this.appRole === 'all';
-  }
-
-  /** True when this process serves the API + WebSocket gateway (api or all). */
-  get runsApi(): boolean {
-    return this.appRole === 'api' || this.appRole === 'all';
   }
 
   get publicBaseUrl(): string {

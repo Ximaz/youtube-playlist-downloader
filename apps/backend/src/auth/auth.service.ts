@@ -10,8 +10,8 @@ import {
 import type { AuthMe, OAuthPlaylist, OAuthPlaylistSummary, SessionTier } from '@ypd/shared';
 import { CodeChallengeMethod, OAuth2Client } from 'google-auth-library';
 
-import { CacheService } from '../cache/cache.service';
-import { AppConfigService } from '../config/app-config.service';
+import { AppConfigService, CacheService } from '@ypd/backend-core';
+
 import { PrismaService } from '../prisma/prisma.service';
 import { YouTubeDataService } from './youtube-data.service';
 

@@ -3,8 +3,9 @@ import { ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { VideoIdSchema } from '@ypd/shared';
 import { ZodValidationPipe } from 'nestjs-zod';
 
+import { MetadataService } from '@ypd/backend-core';
+
 import { VideoMetadataDto } from './dto/metadata.dto';
-import { MetadataService } from './metadata.service';
 
 /** Read-only video metadata. Split out of the original (unprefixed) MetadataController so
  *  each resource has a dedicated controller — easier to find, easier to namespace later. */

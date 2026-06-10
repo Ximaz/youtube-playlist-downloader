@@ -5,7 +5,7 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import Redis from 'iovalkey';
 import type { Server, ServerOptions } from 'socket.io';
 
-import { parseRedisUrl } from '../jobs/redis-connection';
+import { parseRedisUrl } from '@ypd/backend-core';
 
 /**
  * Socket.IO adapter backed by the EXISTING Valkey pub/sub (reuses CACHE_URL — no new service),

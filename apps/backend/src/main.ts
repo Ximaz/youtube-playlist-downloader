@@ -8,23 +8,23 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import type { NextFunction, Request, Response } from 'express';
 import { cleanupOpenApiDoc, ZodValidationPipe } from 'nestjs-zod';
 
-import { AppModule } from './app.module';
+import { AppConfigService } from '@ypd/backend-core';
+
+import { ApiModule } from './api.module';
 import { AllExceptionsFilter } from './common/all-exceptions.filter';
-import { AppConfigService } from './config/app-config.service';
 import { RedisIoAdapter } from './realtime/redis-io.adapter';
 
 const REQUEST_ID_HEADER = 'x-ypd-request-id';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(ApiModule);
   const config = app.get(AppConfigService);
   const logger = new Logger('Bootstrap');
 
-  // Process-level safety net. The API, WebSocket gateway and (until the role split) both
-  // worker pools share ONE process, so a single stray rejection — e.g. a fire-and-forget
-  // `void job.updateProgress(...)` — must not silently crash all of them. Log every
-  // unhandledRejection; on an uncaughtException the process state is unknown, so drain
-  // gracefully and exit non-zero for the orchestrator to restart.
+  // Process-level safety net. The API serves HTTP + the WebSocket gateway in one process, so a
+  // single stray rejection — e.g. a fire-and-forget emit in the gateway — must not silently crash
+  // it. Log every unhandledRejection; on an uncaughtException the process state is unknown, so
+  // drain gracefully and exit non-zero for the orchestrator to restart.
   process.on('unhandledRejection', (reason) => {
     logger.error(`Unhandled promise rejection: ${reason instanceof Error ? reason.stack : reason}`);
   });
@@ -38,15 +38,12 @@ async function bootstrap(): Promise<void> {
   // and dangling connections leak on every deploy.
   app.enableShutdownHooks();
 
-  // Cross-replica WebSocket fan-out: only the API role serves sockets, so only it needs the
-  // Valkey-backed Socket.IO adapter. Must be set before listen() (the gateway's io server is
-  // created during init). Reuses CACHE_URL — no new service.
-  if (config.runsApi) {
-    const ioAdapter = new RedisIoAdapter(app, config.cache.url);
-    await ioAdapter.connect();
-    app.useWebSocketAdapter(ioAdapter);
-    logger.log('Socket.IO Valkey adapter enabled (cross-replica room fan-out)');
-  }
+  // Cross-replica WebSocket fan-out: the Valkey-backed Socket.IO adapter must be set before listen()
+  // (the gateway's io server is created during init). Reuses CACHE_URL — no new service.
+  const ioAdapter = new RedisIoAdapter(app, config.cache.url);
+  await ioAdapter.connect();
+  app.useWebSocketAdapter(ioAdapter);
+  logger.log('Socket.IO Valkey adapter enabled (cross-replica room fan-out)');
 
   // No CORS / cookie middleware: the backend is a pure token API reached only over the internal
   // Docker network by the Nuxt BFF proxy (never a browser), and auth rides the `Authorization`
@@ -80,10 +77,7 @@ async function bootstrap(): Promise<void> {
   SwaggerModule.setup('docs', app, doc);
 
   await app.listen(config.port, '0.0.0.0');
-  logger.log(
-    `YPD backend listening on :${config.port} — role=${config.appRole} ` +
-      `(workers=${config.runsWorkers ? 'on' : 'off'}, api=${config.runsApi ? 'on' : 'off'})`,
-  );
+  logger.log(`YPD API listening on :${config.port}`);
 }
 
 void bootstrap();

@@ -8,7 +8,9 @@ WORKDIR /repo
 FROM base AS build
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json .npmrc ./
 COPY packages/shared/package.json packages/shared/
+COPY packages/backend-core/package.json packages/backend-core/
 COPY apps/backend/package.json apps/backend/
+COPY apps/worker/package.json apps/worker/
 COPY apps/frontend/package.json apps/frontend/
 # Scope to @ypd/frontend... so the backend's prisma-generate postinstall is
 # never invoked (its schema isn't in this build context). BuildKit cache

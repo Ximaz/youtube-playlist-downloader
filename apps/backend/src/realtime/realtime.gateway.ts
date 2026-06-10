@@ -11,11 +11,15 @@ import { roomForWork, type VideoProgress, workJobId, WorkSelectorSchema } from '
 import { QueueEvents, type Queue } from 'bullmq';
 import type { Server, Socket } from 'socket.io';
 
-import { CacheService } from '../cache/cache.service';
-import { AppConfigService } from '../config/app-config.service';
-import { WorkStore } from '../download/work-store.service';
-import { CONVERT_QUEUE, DOWNLOAD_QUEUE } from '../jobs/job.types';
-import { parseRedisUrl } from '../jobs/redis-connection';
+import {
+  AppConfigService,
+  CacheService,
+  CONVERT_QUEUE,
+  DOWNLOAD_QUEUE,
+  parseRedisUrl,
+  WorkStore,
+} from '@ypd/backend-core';
+
 import { PrismaService } from '../prisma/prisma.service';
 
 /** Cache a validated session id in Valkey for this long so a WS reconnect storm doesn't hit
@@ -44,11 +48,6 @@ export class RealtimeGateway implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit(): void {
-    // Worker-role processes serve no WebSocket clients (the BFF proxies sockets to the API tier
-    // only) and the progress fan-out runs here, so the gateway stays fully inert on a worker:
-    // no handshake middleware, no QueueEvents listeners (avoids redundant O(N) stream reads).
-    if (!this.config.runsApi) return;
-
     // Token auth on the handshake: only clients carrying a valid session token can connect.
     // The Nuxt BFF proxy resolves its httpOnly cookie to the backend session token and injects
     // it as `Authorization: Bearer <token>` on the upstream handshake (it also accepts the

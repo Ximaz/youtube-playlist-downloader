@@ -2,8 +2,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import type { Queue } from 'bullmq';
 
-import { CONVERT_QUEUE, DOWNLOAD_QUEUE } from '../jobs/job.types';
-import { MetricsService } from './metrics.service';
+import { CONVERT_QUEUE, DOWNLOAD_QUEUE, MetricsService } from '@ypd/backend-core';
 
 const POLL_MS = 5000;
 

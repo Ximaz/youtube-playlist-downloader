@@ -3,8 +3,9 @@ import { ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { PlaylistIdSchema } from '@ypd/shared';
 import { ZodValidationPipe } from 'nestjs-zod';
 
+import { MetadataService } from '@ypd/backend-core';
+
 import { PlaylistMetadataDto } from './dto/metadata.dto';
-import { MetadataService } from './metadata.service';
 
 /** Read-only playlist metadata (public/unlisted; private playlists go through /auth/playlists). */
 @ApiTags('playlists')

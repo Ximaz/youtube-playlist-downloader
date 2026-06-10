@@ -1,5 +1,9 @@
 **/node_modules
 **/dist
+# Never copy stale incremental-build state into the build context: with `incremental: true`,
+# nest/tsc deletes dist but keeps the tsbuildinfo, so a stale one makes the in-container build
+# skip emitting files (-> an empty dist gets deployed). A clean build context avoids the footgun.
+**/*.tsbuildinfo
 **/.nuxt
 **/.output
 **/.venv

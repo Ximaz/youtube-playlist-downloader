@@ -3,7 +3,7 @@ import { availableParallelism } from 'node:os';
 
 import { Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
 
-import { AppConfigService } from '../config/app-config.service';
+import { AppConfigService } from '@ypd/backend-core';
 
 export type ProgressFn = (pct: number) => void;
 

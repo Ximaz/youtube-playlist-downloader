@@ -1,8 +1,8 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 
-import { BatchModule } from '../download/batch.module';
-import { CONVERT_QUEUE, DOWNLOAD_QUEUE } from '../jobs/job.types';
+import { BatchModule, CONVERT_QUEUE, DOWNLOAD_QUEUE } from '@ypd/backend-core';
+
 import { RealtimeGateway } from './realtime.gateway';
 
 // BullModule.registerQueue here is just a typed alias: JobsModule already configured the

@@ -1,16 +1,5 @@
 import { availableParallelism } from 'node:os';
 
-/** Process role. `api` serves HTTP + the WebSocket gateway and enqueues work but runs NO BullMQ
- *  workers; `worker` runs the download/convert pools (and a metrics/health HTTP surface) but no
- *  user-facing gateway fan-out; `all` is both in one process (the default — keeps `docker
- *  compose up` and local dev a single container). Lets the worker pool scale independently of
- *  the API tier so ffmpeg/CPU never contends with request latency. */
-export type AppRole = 'api' | 'worker' | 'all';
-
-export function parseAppRole(value: string | undefined): AppRole {
-  return value === 'api' || value === 'worker' ? value : 'all';
-}
-
 export interface ProvidersConfig {
   order: string[];
   urls: Record<string, string>;
@@ -48,7 +37,6 @@ export interface GoogleOAuthConfig {
 
 export interface AppConfig {
   port: number;
-  appRole: AppRole;
   publicBaseUrl: string;
   frontendOrigin: string;
   /** I/O-bound; each worker spends most of its time piping bytes to S3 — many cheap. */
@@ -88,7 +76,6 @@ export default (): AppConfig => {
 
   return {
     port: Number(process.env.BACKEND_PORT ?? 3000),
-    appRole: parseAppRole(process.env.APP_ROLE),
     publicBaseUrl: process.env.PUBLIC_BASE_URL ?? 'http://localhost:3000',
     frontendOrigin: process.env.FRONTEND_ORIGIN ?? 'http://localhost:8080',
     downloadConcurrency: Number(process.env.DOWNLOAD_CONCURRENCY ?? 6),

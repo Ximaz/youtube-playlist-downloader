@@ -14,9 +14,8 @@ import type { z } from 'zod';
 import { CacheService } from '../cache/cache.service';
 import { AppConfigService } from '../config/app-config.service';
 import { MetricsService } from '../observability/metrics.service';
+import { type MediaKind } from '../workstore/deliverable';
 import { ProviderRegistry } from './provider-registry.service';
-
-export type MediaKind = 'audio' | 'video';
 
 export interface ProviderStreamResult {
   provider: string;
@@ -173,7 +172,13 @@ export class ProviderClientService {
           container: res.headers.get('x-format-container') ?? undefined,
           codec: res.headers.get('x-format-codec') ?? undefined,
           ext: res.headers.get('x-format-ext') ?? undefined,
-          stream: withInactivityTimeout(Readable.fromWeb(res.body), STREAM_INACTIVITY_MS),
+          // `fetch`'s web ReadableStream (DOM lib) and node's stream/web ReadableStream differ
+          // structurally in this package's type env; the runtime value is a real web stream that
+          // Readable.fromWeb accepts, so cast to its expected param type.
+          stream: withInactivityTimeout(
+            Readable.fromWeb(res.body as unknown as Parameters<typeof Readable.fromWeb>[0]),
+            STREAM_INACTIVITY_MS,
+          ),
         };
       } catch (err) {
         clearTimeout(timer);

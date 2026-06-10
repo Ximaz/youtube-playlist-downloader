@@ -1,16 +1,22 @@
 import { BullModule } from '@nestjs/bullmq';
-import { Global, Module } from '@nestjs/common';
+import { Module } from '@nestjs/common';
+import { CONVERT_QUEUE, DOWNLOAD_QUEUE, ObservabilityCoreModule } from '@ypd/backend-core';
 
-import { CONVERT_QUEUE, DOWNLOAD_QUEUE } from '../jobs/job.types';
 import { MetricsController } from './metrics.controller';
-import { MetricsService } from './metrics.service';
-import { QueueDepthCollector } from './queue-depth.collector';
+import { WorkersCollector } from './workers.collector';
 
-@Global()
+// API metrics surface: the Swagger-excluded /metrics controller + the fleet-size collector
+// (bullmq_workers_connected). MetricsService + the gauges + the process-default metrics live in
+// backend-core's @Global ObservabilityCoreModule. The API does NOT run the queue-depth collector
+// (job status is served from WorkStore/Valkey, not BullMQ counts) but DOES report the connected
+// worker count, which only the queue-holding API can see centrally. registerQueue binds the named
+// queues so @InjectQueue resolves inside the collector.
 @Module({
-  imports: [BullModule.registerQueue({ name: DOWNLOAD_QUEUE }, { name: CONVERT_QUEUE })],
+  imports: [
+    ObservabilityCoreModule,
+    BullModule.registerQueue({ name: DOWNLOAD_QUEUE }, { name: CONVERT_QUEUE }),
+  ],
   controllers: [MetricsController],
-  providers: [MetricsService, QueueDepthCollector],
-  exports: [MetricsService],
+  providers: [WorkersCollector],
 })
 export class ObservabilityModule {}

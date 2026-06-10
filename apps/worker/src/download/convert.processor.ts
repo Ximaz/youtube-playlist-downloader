@@ -3,10 +3,16 @@ import { Logger, type OnModuleInit } from '@nestjs/common';
 import type { VideoProgress } from '@ypd/shared';
 import type { Job } from 'bullmq';
 
-import { AppConfigService } from '../config/app-config.service';
-import { CONVERT_QUEUE, type ConvertVideoJobData } from '../jobs/job.types';
+import {
+  AppConfigService,
+  CONVERT_QUEUE,
+  type ConvertVideoJobData,
+  MetricsService,
+  type WorkResult,
+  WorkStore,
+} from '@ypd/backend-core';
+
 import { PipelineService } from './pipeline.service';
-import { type WorkResult, WorkStore } from './work-store.service';
 
 /** Convert pool: pulls the originals back from S3 and runs ffmpeg. Independent of the
  *  download pool, so converted/merged batches process download + convert concurrently.
@@ -21,12 +27,14 @@ export class ConvertProcessor extends WorkerHost implements OnModuleInit {
     private readonly pipeline: PipelineService,
     private readonly store: WorkStore,
     private readonly config: AppConfigService,
+    private readonly metrics: MetricsService,
   ) {
     super();
   }
 
   onModuleInit(): void {
     this.worker.concurrency = this.config.convertConcurrency;
+    this.metrics.workerConcurrency.set({ pool: 'convert' }, this.worker.concurrency);
     this.logger.log(`convert pool concurrency = ${this.worker.concurrency}`);
   }
 
@@ -36,33 +44,38 @@ export class ConvertProcessor extends WorkerHost implements OnModuleInit {
       void job.updateProgress({ videoId, selection, format, step, pct } satisfies VideoProgress);
     };
 
-    let result: WorkResult;
+    this.metrics.workerActive.inc({ pool: 'convert' });
     try {
-      const out = await this.pipeline.convert(videoId, selection, format, sources, report);
-      result = {
+      let result: WorkResult;
+      try {
+        const out = await this.pipeline.convert(videoId, selection, format, sources, report);
+        result = {
+          videoId,
+          selection,
+          format,
+          status: 'done',
+          title: out.title,
+          key: out.key,
+          ext: out.ext,
+        };
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        this.logger.error(`video ${videoId} convert failed: ${error}`);
+        result = { videoId, selection, format, status: 'failed', error };
+      }
+
+      await this.store.setResult(result);
+      void job.updateProgress({
         videoId,
         selection,
         format,
-        status: 'done',
-        title: out.title,
-        key: out.key,
-        ext: out.ext,
-      };
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
-      this.logger.error(`video ${videoId} convert failed: ${error}`);
-      result = { videoId, selection, format, status: 'failed', error };
+        step: result.status,
+        title: result.title,
+        error: result.error,
+      } satisfies VideoProgress);
+      return result;
+    } finally {
+      this.metrics.workerActive.dec({ pool: 'convert' });
     }
-
-    await this.store.setResult(result);
-    void job.updateProgress({
-      videoId,
-      selection,
-      format,
-      step: result.status,
-      title: result.title,
-      error: result.error,
-    } satisfies VideoProgress);
-    return result;
   }
 }

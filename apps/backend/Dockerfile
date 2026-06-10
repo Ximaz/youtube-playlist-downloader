@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-# Build context = repo root (workspace member; needs packages/shared + root lockfile).
+# Build context = repo root (workspace member; needs packages/shared + packages/backend-core + the
+# root lockfile).
 
 FROM node:24-alpine AS base
 RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
@@ -11,19 +12,25 @@ FROM base AS build
 # invalidated only when the lockfile, package manifests, or the schema change.
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json .npmrc ./
 COPY packages/shared/package.json packages/shared/
+COPY packages/backend-core/package.json packages/backend-core/
 COPY apps/backend/package.json apps/backend/
 COPY apps/backend/prisma apps/backend/prisma
 COPY apps/backend/prisma.config.ts apps/backend/
+# All other workspace manifests are needed for --frozen-lockfile to resolve the full graph, even
+# though --filter @ypd/backend... only installs the backend + its deps (shared, backend-core).
+COPY apps/worker/package.json apps/worker/
 COPY apps/frontend/package.json apps/frontend/
 # Scope to @ypd/backend... so the frontend's deps aren't pulled and its
 # postinstalls aren't visited. BuildKit cache mount keeps the pnpm store
 # warm across builds (rebuilds reuse it; clean builds get a fresh store).
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm-store \
     pnpm install --frozen-lockfile --filter @ypd/backend... --config.storeDir=/pnpm-store
-# Sources, then build shared types + Nest.
+# Sources, then build shared types -> backend-core lib -> Nest (topological order).
 COPY packages/shared packages/shared
+COPY packages/backend-core packages/backend-core
 COPY apps/backend apps/backend
 RUN pnpm --filter @ypd/shared build \
+ && pnpm --filter @ypd/backend-core build \
  && pnpm --filter @ypd/backend build
 # Self-contained prod deploy (workspace deps copied in, dev deps dropped).
 # pnpm deploy doesn't reliably re-fire postinstall in /app, so we generate the
@@ -37,9 +44,9 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm-store \
  && rm -rf /app/node_modules/.cache /app/tsconfig.tsbuildinfo /app/tsconfig.build.tsbuildinfo
 
 FROM node:24-alpine AS runtime
-# tini = PID 1 init: reaps zombies, forwards signals (SIGTERM → Node).
-# ffmpeg = transcoder used by the convert pipeline.
-RUN apk add --no-cache ffmpeg tini
+# tini = PID 1 init: reaps zombies, forwards signals (SIGTERM → Node). No ffmpeg here — the API only
+# enqueues work + streams archives from S3; the convert pipeline (ffmpeg) lives in the worker image.
+RUN apk add --no-cache tini
 WORKDIR /app
 ENV NODE_ENV=production \
     BACKEND_PORT=3000

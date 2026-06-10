@@ -3,17 +3,20 @@ import { Logger, NotFoundException, type OnModuleInit } from '@nestjs/common';
 import { type VideoProgress, workJobId } from '@ypd/shared';
 import { type Job, Queue } from 'bullmq';
 
-import { AppConfigService } from '../config/app-config.service';
 import {
+  AppConfigService,
   CONVERT_QUEUE,
   type ConvertVideoJobData,
   DOWNLOAD_QUEUE,
   type DownloadVideoJobData,
   JOB_CONVERT_VIDEO,
-} from '../jobs/job.types';
-import { ProvidersUnavailableError } from '../providers/provider-client.service';
+  MetricsService,
+  ProvidersUnavailableError,
+  type WorkResult,
+  WorkStore,
+} from '@ypd/backend-core';
+
 import { PipelineService } from './pipeline.service';
-import { type WorkResult, WorkStore } from './work-store.service';
 
 /** Download pool: streams originals to S3. On success it either finalises a plain-original
  *  video or hands the originals off to the convert pool, then frees its slot immediately.
@@ -32,12 +35,14 @@ export class DownloadProcessor extends WorkerHost implements OnModuleInit {
     private readonly store: WorkStore,
     @InjectQueue(CONVERT_QUEUE) private readonly convertQueue: Queue,
     private readonly config: AppConfigService,
+    private readonly metrics: MetricsService,
   ) {
     super();
   }
 
   onModuleInit(): void {
     this.worker.concurrency = this.config.downloadConcurrency;
+    this.metrics.workerConcurrency.set({ pool: 'download' }, this.worker.concurrency);
     this.logger.log(`download pool concurrency = ${this.worker.concurrency}`);
   }
 
@@ -47,6 +52,7 @@ export class DownloadProcessor extends WorkerHost implements OnModuleInit {
       void job.updateProgress({ videoId, selection, format, step, pct } satisfies VideoProgress);
     };
 
+    this.metrics.workerActive.inc({ pool: 'download' });
     try {
       const outcome = await this.pipeline.download(videoId, selection, format, report);
 
@@ -138,6 +144,8 @@ export class DownloadProcessor extends WorkerHost implements OnModuleInit {
         error,
       } satisfies VideoProgress);
       return result;
+    } finally {
+      this.metrics.workerActive.dec({ pool: 'download' });
     }
   }
 }

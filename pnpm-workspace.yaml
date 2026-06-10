@@ -1,7 +1,11 @@
-# Only the backend + frontend share code (packages/shared). The youtube.js
-# provider is intentionally a STANDALONE pnpm project (its own lockfile) so it
-# stays fully decoupled and gets a self-contained, reproducible Docker build.
+# Shared code lives in two packages: packages/shared (pure Zod DTOs/types — also consumed by the
+# frontend, so it stays NestJS-free) and packages/backend-core (shared NestJS infra — config, cache,
+# storage, jobs, providers, metadata, work-store, metrics — consumed by the API and worker apps).
+# The youtube.js provider is intentionally a STANDALONE pnpm project (its own lockfile) so it stays
+# fully decoupled and gets a self-contained, reproducible Docker build.
 packages:
   - "apps/backend"
+  - "apps/worker"
   - "apps/frontend"
   - "packages/shared"
+  - "packages/backend-core"

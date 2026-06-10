@@ -8,19 +8,20 @@ import { pipeline } from 'node:stream/promises';
 import { Injectable, Logger } from '@nestjs/common';
 import type { MediaSelection, OutputFormat, VideoMetadata, VideoStep } from '@ypd/shared';
 
-import type { ConvertSource } from '../jobs/job.types';
-import { MetadataService } from '../metadata/metadata.service';
-import { ProviderClientService } from '../providers/provider-client.service';
-import { StorageService } from '../storage/storage.service';
 import {
+  type ConvertSource,
   type Deliverable,
   fixedDeliverable,
   type MediaKind,
+  MetadataService,
   mergedOriginalDeliverable,
   needsFfmpeg,
   originalKey,
+  ProviderClientService,
   requiredKinds,
-} from './deliverable';
+  StorageService,
+} from '@ypd/backend-core';
+
 import { FfmpegService } from './ffmpeg.service';
 
 export type ProgressReporter = (step: VideoStep, pct?: number) => void;
