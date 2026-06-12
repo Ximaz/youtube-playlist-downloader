@@ -4,8 +4,6 @@ import {
   type DownloadRequest,
   type DownloadResponse,
   DownloadResponseSchema,
-  type OAuthPlaylist,
-  OAuthPlaylistSchema,
   type OAuthPlaylistSummary,
   OAuthPlaylistSummarySchema,
   type PlaylistMetadata,
@@ -155,7 +153,7 @@ export async function ensureSession(): Promise<void> {
 export async function fetchUserPlaylists(): Promise<OAuthPlaylistSummary[] | null> {
   try {
     const res = await request(
-      `${backendBase()}/auth/playlists`,
+      `${backendBase()}/playlists`,
       { credentials: 'include' },
       TIMEOUT.authPlaylists,
       'Failed to load your playlists',
@@ -168,17 +166,19 @@ export async function fetchUserPlaylists(): Promise<OAuthPlaylistSummary[] | nul
   }
 }
 
-/** Lazy-fetch one playlist's videoIds. Returns null on 401. */
-export async function fetchUserPlaylist(id: string): Promise<OAuthPlaylist | null> {
+/** Lazy-fetch one playlist (picker row → official Data API server-side). Returns null on 401 so the
+ *  caller flips back to the signed-out picker. Same `/playlists/:id` endpoint as `getPlaylist`; this
+ *  variant tolerates a 401 (session expired) instead of throwing. */
+export async function fetchUserPlaylist(id: string): Promise<PlaylistMetadata | null> {
   try {
     const res = await request(
-      `${backendBase()}/auth/playlists/${encodeURIComponent(id)}`,
+      `${backendBase()}/playlists/${encodeURIComponent(id)}`,
       { credentials: 'include' },
       TIMEOUT.authPlaylist,
       'Failed to load playlist',
       2,
     );
-    return parseJson(res, OAuthPlaylistSchema);
+    return parseJson(res, PlaylistMetadataSchema);
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) return null;
     throw err;

@@ -55,16 +55,23 @@ export const VideoMetadataSchema = z
   .strict();
 export type VideoMetadata = z.infer<typeof VideoMetadataSchema>;
 
+/** One playlist entry. `id` is always present; `title` only when known at list time — providers
+ *  carry it free from flat playlist extraction, so the UI can label rows immediately instead of raw
+ *  ids (absent titles fall back to the id, backfilled by the live `video:progress` events). */
+export const PlaylistVideoSchema = z
+  .object({
+    id: z.string(),
+    title: z.string().optional(),
+  })
+  .strict();
+export type PlaylistVideo = z.infer<typeof PlaylistVideoSchema>;
+
 export const PlaylistMetadataSchema = z
   .object({
     id: z.string(),
     title: z.string().optional(),
     author: z.string().optional(),
-    videoIds: z.array(z.string()),
-    /** videoId → title for the videos whose title is known at list time. Providers carry it
-     *  for free from their flat playlist extraction; the UI seeds queue-row labels from it so
-     *  titles show immediately instead of raw ids (missing entries fall back to the id). */
-    videoTitles: z.record(z.string(), z.string()).optional(),
+    videos: z.array(PlaylistVideoSchema),
   })
   .strict();
 export type PlaylistMetadata = z.infer<typeof PlaylistMetadataSchema>;

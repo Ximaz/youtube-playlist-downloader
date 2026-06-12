@@ -7,13 +7,12 @@ import {
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
-import type { AuthMe, OAuthPlaylist, OAuthPlaylistSummary, SessionTier } from '@ypd/shared';
+import type { AuthMe, SessionTier } from '@ypd/shared';
 import { CodeChallengeMethod, OAuth2Client } from 'google-auth-library';
 
 import { AppConfigService, CacheService } from '@ypd/backend-core';
 
 import { PrismaService } from '../prisma/prisma.service';
-import { YouTubeDataService } from './youtube-data.service';
 
 /** YouTube Data API read-only scope: covers playlists + playlist items. */
 const YOUTUBE_READONLY_SCOPE = 'https://www.googleapis.com/auth/youtube.readonly';
@@ -28,12 +27,20 @@ const STATE_PREFIX = 'oauth:state:';
 const STATE_TTL_SECONDS = 600; // 10 min — covers a normal consent screen.
 /** Refresh the access token if it expires within this window of `now`. */
 const REFRESH_LEEWAY_SECONDS = 60;
-/** TTL for the per-user OAuth playlist caches. Short on purpose: a freshly renamed
- * or newly created playlist becomes visible within ~5 min without an explicit refresh.
- * Same trust boundary as the DB (ADR 0008) — cached entries hold private playlist titles. */
-const PLAYLIST_CACHE_TTL_SECONDS = 300;
-const SUMMARIES_KEY_PREFIX = 'oauth:summaries:';
-const PLAYLIST_KEY_PREFIX = 'oauth:playlist:';
+/**
+ * The per-session OAuth playlist cache namespace. `auth/` owns the `oauth:`-prefixed,
+ * session-scoped cache keys and their teardown (signOut clears them) because cache
+ * invalidation is part of the session lifecycle; `PlaylistsService` owns what goes in them
+ * (it imports these to read/write the signed-in playlist responses). Exported, not private,
+ * so the two sides agree on one key scheme without a DI edge back into auth.
+ *
+ * TTL is short on purpose: a freshly renamed or newly created playlist becomes visible within
+ * ~5 min without an explicit refresh. Same trust boundary as the DB (ADR 0008) — cached entries
+ * hold private playlist titles.
+ */
+export const PLAYLIST_CACHE_TTL_SECONDS = 300;
+export const SUMMARIES_KEY_PREFIX = 'oauth:summaries:';
+export const PLAYLIST_KEY_PREFIX = 'oauth:playlist:';
 
 @Injectable()
 export class AuthService {
@@ -43,7 +50,6 @@ export class AuthService {
     private readonly config: AppConfigService,
     private readonly cache: CacheService,
     private readonly prisma: PrismaService,
-    private readonly youtube: YouTubeDataService,
   ) {}
 
   /**
@@ -183,56 +189,14 @@ export class AuthService {
     };
   }
 
-  /**
-   * Lightweight per-playlist summary for the picker UI. One paginated playlists.list
-   * call with `part=snippet,contentDetails` — `itemCount` lets the frontend show "(N
-   * videos)" without doing a second round-trip. NO playlistItems.list calls fire here:
-   * the items + privacy filter happen lazily in getUserPlaylist() once a row is picked.
-   *
-   * Cached in Valkey for PLAYLIST_CACHE_TTL_SECONDS; signOut() invalidates the key.
-   * A token revoked Google-side while the cache is warm stays cosmetically visible
-   * until expiry — downloads still fail correctly because they don't use this cache.
-   */
-  async listUserPlaylistSummaries(sessionId: string): Promise<OAuthPlaylistSummary[]> {
-    const cacheKey = SUMMARIES_KEY_PREFIX + sessionId;
-    const cached = await this.cache.getJson<OAuthPlaylistSummary[]>(cacheKey);
-    if (cached) return cached;
-
-    const accessToken = await this.#getValidAccessToken(sessionId);
-    const summaries = await this.youtube.listMyPlaylists(accessToken);
-    await this.cache.setJson(cacheKey, summaries, PLAYLIST_CACHE_TTL_SECONDS);
-    return summaries;
-  }
-
-  /**
-   * Full detail for one playlist: title + playable (public + unlisted) videoIds. The
-   * title and items are fetched in parallel so a click on the picker resolves in ~one
-   * Data API round-trip's worth of wall-clock. Cached per (sessionId, playlistId)
-   * with the same TTL as the summaries.
-   */
-  async getUserPlaylist(sessionId: string, playlistId: string): Promise<OAuthPlaylist> {
-    const cacheKey = `${PLAYLIST_KEY_PREFIX}${sessionId}:${playlistId}`;
-    const cached = await this.cache.getJson<OAuthPlaylist>(cacheKey);
-    if (cached) return cached;
-
-    const accessToken = await this.#getValidAccessToken(sessionId);
-    const [title, videos] = await Promise.all([
-      this.youtube.getPlaylistTitle(accessToken, playlistId),
-      this.youtube.listPlaylistVideos(accessToken, playlistId),
-    ]);
-    // playlistItems.snippet carries each item's title for free in the same call, so the UI can
-    // label queue rows immediately. Order comes from `videoIds`; `videoTitles` is the id→title map.
-    const videoIds = videos.map((v) => v.id);
-    const videoTitles: Record<string, string> = {};
-    for (const v of videos) if (v.title) videoTitles[v.id] = v.title;
-    const result: OAuthPlaylist = {
-      id: playlistId,
-      ...(title ? { title } : {}),
-      videoIds,
-      ...(Object.keys(videoTitles).length ? { videoTitles } : {}),
-    };
-    await this.cache.setJson(cacheKey, result, PLAYLIST_CACHE_TTL_SECONDS);
-    return result;
+  /** True when the session is signed in with Google (has an OAuthAccount). Cheap existence check
+   *  used by GET /playlists/:id to decide between the official Data API and the public fallback. */
+  async hasGoogleAccount(sessionId: string): Promise<boolean> {
+    const account = await this.prisma.oAuthAccount.findUnique({
+      where: { sessionId },
+      select: { sessionId: true },
+    });
+    return account !== null;
   }
 
   // ---------------------------------------------------------------- private helpers
@@ -246,15 +210,18 @@ export class AuthService {
   }
 
   /**
-   * Return an access token that is valid for at least REFRESH_LEEWAY_SECONDS. Refresh against
-   * Google + persist the new token if the stored one is close to expiry.
+   * Token-vending entry point for the authenticated metadata path: returns an access token
+   * valid for at least REFRESH_LEEWAY_SECONDS, refreshing against Google + persisting the new
+   * token if the stored one is close to expiry. `PlaylistsService` calls this; `auth/` keeps
+   * the whole token lifecycle so the metadata layer never touches refresh tokens or Google.
+   * Throws UnauthorizedException for an anonymous / signed-out session.
    *
    * A Valkey SETNX mutex per session serialises racing refreshes: the winner refreshes,
    * losers wait + re-read OAuthAccount and find the fresh token already persisted.
    * Transient Google errors (5xx / network) raise 503 and keep the session intact —
    * only `invalid_grant` / `invalid_token` (refresh_token revoked or expired) signs out.
    */
-  async #getValidAccessToken(sessionId: string): Promise<string> {
+  async getValidAccessToken(sessionId: string): Promise<string> {
     const initial = await this.prisma.oAuthAccount.findUnique({ where: { sessionId } });
     if (!initial) throw new UnauthorizedException('Not signed in.');
     if (!this.#needsRefresh(initial.expiresAt)) return initial.accessToken;

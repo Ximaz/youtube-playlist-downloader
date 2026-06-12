@@ -57,7 +57,8 @@
             "type": "object",
             "properties": {
               "url": {
-                "type": "string"
+                "type": "string",
+                "format": "uri"
               },
               "width": {
                 "type": "integer",
@@ -204,23 +205,28 @@
         "author": {
           "type": "string"
         },
-        "videoIds": {
+        "videos": {
           "type": "array",
           "items": {
-            "type": "string"
-          }
-        },
-        "videoTitles": {
-          "description": "Optional videoId -> title map, carried free from flat playlist extraction so consumers can label rows without a per-video metadata fetch. May omit ids whose title is unknown.",
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
           }
         }
       },
       "required": [
         "id",
-        "videoIds"
+        "videos"
       ],
       "additionalProperties": false
     },

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { PlaylistVideo } from '@ypd/shared';
 import { computed } from 'vue';
 
 import type { UseDownloadBatch } from '../composables/useDownloadBatch';
@@ -7,10 +8,10 @@ import VideoRow from './VideoRow.vue';
 
 const props = defineProps<{
   download: UseDownloadBatch;
-  videoIds: string[];
-  /** videoId → title known at playlist-load time, so rows show titles immediately instead of
-   *  raw ids (the live `video:progress` title takes over once a download starts). */
-  videoTitles: Record<string, string>;
+  /** Videos to render, in order. Each carries its title when known at playlist-load time so rows
+   *  show titles immediately instead of raw ids (the live `video:progress` title takes over once a
+   *  download starts). */
+  videos: PlaylistVideo[];
   playlistTitle: string | null;
 }>();
 
@@ -26,16 +27,16 @@ const ext = computed(() =>
     : outputExt(d.selection.value, d.format.value),
 );
 
-const rendered = computed(() => props.videoIds.length);
+const rendered = computed(() => props.videos.length);
 const title = computed(() => props.playlistTitle ?? 'Playlist');
 
 // Overall % — the spec's weighted aggregate (§7): conversion jobs count as two phases, so a
 // downloaded-but-not-converted item is only halfway. Terminal states contribute a full 1.
 const overall = computed(() => {
-  const ids = props.videoIds;
-  if (!ids.length) return 0;
+  const vids = props.videos;
+  if (!vids.length) return 0;
   let sum = 0;
-  for (const id of ids) {
+  for (const { id } of vids) {
     const p = d.progress.value[id];
     const step = p?.step ?? 'queued';
     const convert = p ? p.format === 'converted' : d.format.value === 'converted';
@@ -46,7 +47,7 @@ const overall = computed(() => {
     else if (step === 'convert') sum += (1 + pct / 100) / phases;
     else if (step === 'download') sum += pct / 100 / phases;
   }
-  return Math.round((100 * sum) / ids.length);
+  return Math.round((100 * sum) / vids.length);
 });
 
 const meta = computed(
@@ -155,12 +156,12 @@ function onZip(): void {
     <!-- Video list -->
     <ul class="px-4 pt-3.5 pb-5.5">
       <VideoRow
-        v-for="(id, i) in videoIds"
-        :key="id"
+        v-for="(v, i) in videos"
+        :key="v.id"
         :index="i + 1"
-        :video-id="id"
-        :progress="download.progress.value[id]"
-        :fallback-title="videoTitles[id]"
+        :video-id="v.id"
+        :progress="download.progress.value[v.id]"
+        :fallback-title="v.title"
         :ext="ext"
       />
     </ul>

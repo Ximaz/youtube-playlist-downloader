@@ -66,7 +66,7 @@ async function onStart(): Promise<void> {
       if (!ok) return;
     }
     if (!playlistSource.playlist.value) return;
-    await download.start(playlistSource.playlist.value.videoIds);
+    await download.start(playlistSource.playlist.value.videos.map((v) => v.id));
     void revealQueue();
   } catch (err) {
     toast.add({ title: 'Could not start download', description: asString(err), color: 'error' });
@@ -80,13 +80,8 @@ async function onPickPlaylist(p: OAuthPlaylistSummary): Promise<void> {
   try {
     const full = await auth.resolvePlaylist(p);
     if (!full) return; // superseded by a newer pick, or session ended
-    playlistSource.setPlaylist({
-      id: full.id,
-      title: full.title,
-      videoIds: full.videoIds,
-      videoTitles: full.videoTitles,
-    });
-    await download.start(full.videoIds);
+    playlistSource.setPlaylist(full);
+    await download.start(full.videos.map((v) => v.id));
     void revealQueue();
   } catch (err) {
     toast.add({ title: 'Could not start download', description: asString(err), color: 'error' });
@@ -149,12 +144,11 @@ function asString(err: unknown): string {
       <div v-if="download.started.value" ref="queueEl" class="mt-16 scroll-mt-24">
         <QueuePanel
           :download="download"
-          :video-ids="
-            playlistSource.playlist.value?.videoIds.length
-              ? playlistSource.playlist.value.videoIds
-              : download.videoIds.value
+          :videos="
+            playlistSource.playlist.value?.videos.length
+              ? playlistSource.playlist.value.videos
+              : download.videoIds.value.map((id) => ({ id }))
           "
-          :video-titles="playlistSource.playlist.value?.videoTitles ?? {}"
           :playlist-title="playlistSource.playlist.value?.title ?? null"
         />
       </div>

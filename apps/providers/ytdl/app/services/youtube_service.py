@@ -239,16 +239,20 @@ class YoutubeService:
         except DownloadError as exc:
             raise self._classify(exc, "PLAYLIST_NOT_FOUND") from exc
         entries = [e for e in (info.get("entries") or []) if e and e.get("id")]
-        # flat extraction carries each entry's title for free — surface it as an id->title map
-        # so the backend/UI can label rows immediately instead of showing raw video ids.
-        video_titles = {e["id"]: e["title"] for e in entries if e.get("title")}
+        # flat extraction carries each entry's title for free — surface it per video so the
+        # backend/UI can label rows immediately instead of showing raw video ids.
+        videos: list[dict[str, Any]] = []
+        for e in entries:
+            video: dict[str, Any] = {"id": e["id"]}
+            title = e.get("title")
+            if title:
+                video["title"] = title
+            videos.append(video)
         dto: dict[str, Any] = {
             "id": info.get("id") or playlist_id,
             "title": info.get("title"),
-            "videoIds": [e["id"] for e in entries],
+            "videos": videos,
         }
-        if video_titles:
-            dto["videoTitles"] = video_titles
         author = info.get("uploader") or info.get("channel")
         if author:
             dto["author"] = author

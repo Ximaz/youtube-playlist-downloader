@@ -7,7 +7,7 @@ import { z } from 'zod';
  *  not the frontend/backend API surface. */
 const YtThumbnailSchema = z
   .object({
-    url: z.string().url(),
+    url: z.url(),
     width: z.number().int().positive().optional(),
     height: z.number().int().positive().optional(),
   })
@@ -38,7 +38,7 @@ const PlaylistsResponseSchema = z
       .optional(),
     nextPageToken: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 type PlaylistsResponse = z.infer<typeof PlaylistsResponseSchema>;
 
 const PlaylistItemsResponseSchema = z
@@ -56,7 +56,7 @@ const PlaylistItemsResponseSchema = z
       .optional(),
     nextPageToken: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 
 const YT_PAGE_SIZE = 50;
 
@@ -86,9 +86,12 @@ function bestThumbnail(
 }
 
 /**
- * Thin client over the YouTube Data v3 endpoints we use during the OAuth flow. Lives in its
- * own service so AuthService stays focused on the OAuth lifecycle (session, refresh, signOut)
- * and so the Zod-at-the-boundary discipline matches ProviderClientService.
+ * Thin client over the official YouTube Data v3 endpoints — the *authenticated* metadata path,
+ * the counterpart to the token-free provider extraction in MetadataService. Lives next to the
+ * metadata controllers (not under auth/) because fetching playlist metadata is a metadata
+ * concern, not an auth one: `auth/` only vends the token, `PlaylistsService` calls this. Every
+ * method takes an `accessToken` because Google's official API is auth-only by design, not
+ * because the data itself requires it. Zod-at-the-boundary discipline matches ProviderClientService.
  */
 @Injectable()
 export class YouTubeDataService {

@@ -1,4 +1,4 @@
-import type { OAuthPlaylist, OAuthPlaylistSummary, SessionTier } from '@ypd/shared';
+import type { OAuthPlaylistSummary, PlaylistMetadata, SessionTier } from '@ypd/shared';
 import { ref } from 'vue';
 
 import { ensureSession, fetchMe, fetchUserPlaylist, fetchUserPlaylists, signOut } from '../lib/api';
@@ -62,7 +62,7 @@ export function useAuth() {
 
   /** Returns the resolved playlist, or null if the request was superseded or the
    *  session expired server-side (caller flips back to the signed-out picker). */
-  async function resolvePlaylist(p: OAuthPlaylistSummary): Promise<OAuthPlaylist | null> {
+  async function resolvePlaylist(p: OAuthPlaylistSummary): Promise<PlaylistMetadata | null> {
     const token = nextPickToken();
     loadingPlaylistId.value = p.id;
     try {

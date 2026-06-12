@@ -278,7 +278,10 @@ export class DownloadService {
 
   async #resolveVideoIds(req: DownloadRequest): Promise<string[]> {
     if (req.videoIds && req.videoIds.length > 0) return req.videoIds;
-    if (req.playlistId) return (await this.metadata.getPlaylist(req.playlistId)).videoIds;
+    if (req.playlistId) {
+      const playlist = await this.metadata.getPlaylist(req.playlistId);
+      return playlist.videos.map((v) => v.id);
+    }
     return [];
   }
 }

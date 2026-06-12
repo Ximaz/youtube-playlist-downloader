@@ -3,6 +3,8 @@
 
 import { z } from "zod";
 
+import { PlaylistVideoSchema } from "./metadata";
+
 /** A thumbnail URL + dimensions (subset of the YouTube Data API thumbnail shape we keep). */
 export const OAuthThumbnailSchema = z
   .object({
@@ -29,20 +31,16 @@ export const OAuthPlaylistSummarySchema = z
   .strict();
 export type OAuthPlaylistSummary = z.infer<typeof OAuthPlaylistSummarySchema>;
 
-/** GET /auth/playlists/:id — one playlist's playable (public + unlisted) videos,
- * filtered server-side. The shape mirrors PlaylistMetadata so the frontend can
- * assign it directly into the existing download flow.
- *
- * `videoTitles` maps videoId → title for the videos whose title is known at list time
- * (carried free from the Data API's playlistItems.snippet). The UI seeds each queue row's
- * label from it so titles show immediately instead of raw ids; absent entries fall back to
- * the id and get backfilled by the live `video:progress` events. */
+/** GET /playlists/:id (OAuth path) — one playlist's playable (public + unlisted) videos,
+ * filtered server-side. The shape mirrors PlaylistMetadata so the frontend can assign it
+ * directly into the existing download flow. Each `videos` entry carries its title when known
+ * (free from the Data API's playlistItems.snippet) so the UI labels rows immediately; absent
+ * titles fall back to the id and get backfilled by the live `video:progress` events. */
 export const OAuthPlaylistSchema = z
   .object({
     id: z.string(),
     title: z.string().optional(),
-    videoIds: z.array(z.string()),
-    videoTitles: z.record(z.string(), z.string()).optional(),
+    videos: z.array(PlaylistVideoSchema),
   })
   .strict();
 export type OAuthPlaylist = z.infer<typeof OAuthPlaylistSchema>;

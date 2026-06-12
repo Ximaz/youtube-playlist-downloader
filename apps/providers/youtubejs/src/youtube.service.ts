@@ -89,9 +89,9 @@ interface PlaylistDto {
   id: string;
   title?: string;
   author?: string;
-  videoIds: string[];
-  /** videoId → title, carried free from the playlist items so the UI can label rows up front. */
-  videoTitles?: Record<string, string>;
+  /** Playable videos; each carries its title when known (free from the playlist items) so the UI
+   *  can label rows up front instead of raw ids. */
+  videos: { id: string; title?: string }[];
 }
 
 interface StreamResult {
@@ -281,15 +281,13 @@ export class YoutubeService {
 
     const title = page.info.title;
     const author = page.info.author?.name;
-    const videoIds: string[] = [];
+    const videos: { id: string; title?: string }[] = [];
     // youtubei.js PlaylistVideo.title is a `Text` node (`.text`); capture it free for the UI.
-    const videoTitles: Record<string, string> = {};
     const collect = (items: readonly unknown[]): void => {
       for (const item of items) {
         const { id, title: itemTitle } = item as { id?: string; title?: { text?: string } };
         if (!id) continue;
-        videoIds.push(id);
-        if (itemTitle?.text) videoTitles[id] = itemTitle.text;
+        videos.push({ id, ...(itemTitle?.text ? { title: itemTitle.text } : {}) });
       }
     };
 
@@ -299,17 +297,16 @@ export class YoutubeService {
         page = await page.getContinuation();
       } catch (err) {
         // Mid-pagination failures (playlist deleted between pages, transient upstream)
-        // shouldn't drop the videoIds we've already collected — surface a precise error
+        // shouldn't drop the videos we've already collected — surface a precise error
         // instead of letting collect() bubble an unclassified UPSTREAM_ERROR.
         throw this.#classify(err, 'PLAYLIST_NOT_FOUND');
       }
       collect(page.items);
     }
 
-    const dto: PlaylistDto = { id: playlistId, videoIds };
+    const dto: PlaylistDto = { id: playlistId, videos };
     if (title) dto.title = title;
     if (author) dto.author = author;
-    if (Object.keys(videoTitles).length) dto.videoTitles = videoTitles;
     return dto;
   }
 

@@ -54,7 +54,7 @@ export function usePlaylistSource() {
       playlist.value = null;
       return { ok: false, skipped };
     }
-    playlist.value = { id: 'pasted', title: 'Pasted URLs', videoIds: ids, videoTitles: {} };
+    playlist.value = { id: 'pasted', title: 'Pasted URLs', videos: ids.map((id) => ({ id })) };
     return { ok: true, skipped };
   }
 

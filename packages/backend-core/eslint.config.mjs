@@ -6,6 +6,14 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
+    // Pin the parser's root to this package. Without it, typescript-eslint v8 auto-infers
+    // tsconfigRootDir and errors in the monorepo (it finds both apps/backend and
+    // packages/backend-core as candidates) when the IDE lints from the workspace root.
+    languageOptions: {
+      parserOptions: {
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
     rules: {
       '@typescript-eslint/no-extraneous-class': 'off',
     },

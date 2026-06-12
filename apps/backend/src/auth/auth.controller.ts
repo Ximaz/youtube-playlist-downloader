@@ -1,17 +1,6 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Headers,
-  HttpCode,
-  Param,
-  Post,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { Body, Controller, Get, Headers, HttpCode, Post } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import type { AuthMe, OAuthPlaylist, OAuthPlaylistSummary } from '@ypd/shared';
-import { PlaylistIdSchema } from '@ypd/shared';
-import { ZodValidationPipe } from 'nestjs-zod';
+import type { AuthMe } from '@ypd/shared';
 
 import { AuthService } from './auth.service';
 import { GoogleExchangeDto } from './dto/google-exchange.dto';
@@ -72,27 +61,6 @@ export class AuthController {
     return this.auth.getMe(sessionId);
   }
 
-  @Get('playlists')
-  @ApiOperation({
-    summary:
-      "Lightweight summaries (id + title + itemCount) of the user's playlists. One paginated Data API call, no per-playlist items fetch.",
-  })
-  async playlists(@SessionId() sessionId?: string): Promise<OAuthPlaylistSummary[]> {
-    return this.auth.listUserPlaylistSummaries(this.#require(sessionId));
-  }
-
-  @Get('playlists/:id')
-  @ApiOperation({
-    summary:
-      'One playlist with its playable (public + unlisted) video ids; fetched lazily when the user picks a row.',
-  })
-  async playlist(
-    @SessionId() sessionId: string | undefined,
-    @Param('id', new ZodValidationPipe(PlaylistIdSchema)) id: string,
-  ): Promise<OAuthPlaylist> {
-    return this.auth.getUserPlaylist(this.#require(sessionId), id);
-  }
-
   @Post('sign-out')
   @HttpCode(204)
   @ApiOperation({
@@ -100,11 +68,6 @@ export class AuthController {
   })
   async signOut(@SessionId() sessionId?: string): Promise<void> {
     if (sessionId) await this.auth.signOut(sessionId);
-  }
-
-  #require(sessionId: string | undefined): string {
-    if (!sessionId) throw new UnauthorizedException('Not signed in.');
-    return sessionId;
   }
 }
 
