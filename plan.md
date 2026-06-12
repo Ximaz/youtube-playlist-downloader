@@ -17,9 +17,9 @@ Session + OAuthAccount), **S3** (artifacts), **ffmpeg** (conversion).
 Only Workstream F (this plan) remains.** What's already in place (do NOT redo):
 
 - **Backend resilience (C):** Valkey client has `commandTimeout` + capped `retryStrategy` + error
-  listeners ([cache.service.ts](apps/backend/src/cache/cache.service.ts)); S3 client has connect/
-  request timeouts + honest not-found-vs-outage ([storage.service.ts](apps/backend/src/storage/storage.service.ts));
-  per-provider circuit breaker + per-provider concurrency budgets ([provider-client.service.ts](apps/backend/src/providers/provider-client.service.ts));
+  listeners ([cache.service.ts](packages/backend-core/src/cache/cache.service.ts)); S3 client has connect/
+  request timeouts + honest not-found-vs-outage ([storage.service.ts](packages/backend-core/src/storage/storage.service.ts));
+  per-provider circuit breaker + per-provider concurrency budgets ([provider-client.service.ts](packages/backend-core/src/providers/provider-client.service.ts));
   `/ready` requires infra + **≥1 provider** (not all) ([health.controller.ts](apps/backend/src/health/health.controller.ts));
   global `unhandledRejection`/`uncaughtException` guards ([main.ts](apps/backend/src/main.ts)).
 - **Frontend resilience (D):** REST retry/backoff for idempotent GETs; **batch persisted to
@@ -52,6 +52,14 @@ Only Workstream F (this plan) remains.** What's already in place (do NOT redo):
   attest outside a real browser). youtubejs `#parallelDownload` was rewritten to direct ranged
   `fetch` (decipher URL once + independent ranged requests + retry + AbortController) — fixed a
   >2 MiB stall on the fallback streamer.
+- **Metadata/auth separation (recent, committed):** `youtube-data.service.ts` moved out of `auth/`
+  into a new `apps/backend/src/metadata/` module (`PlaylistsService` + `YouTubeDataService` +
+  `VideosController`/`PlaylistsController`); `auth.service.ts` is now pure OAuth lifecycle + token
+  vending (public `getValidAccessToken`, `hasGoogleAccount`, `signOut`, `getMe`, `createSession`). The
+  metadata module imports backend-core's token-free `MetadataModule` **and** `AuthModule`, choosing the
+  authenticated Data-API path vs anonymous provider extraction per request — so the **`ypd-backend`
+  image now calls the providers for metadata** (see Part 3 env matrix). On the API image only; no new
+  infra/env.
 
 **Current runtime (docker-compose, all verified healthy):** `storage` (SeaweedFS), `cache` (Valkey
 8.1, ACL-locked), `database` (Postgres 17), `provider-ytdl`, `provider-youtubejs`, `provider-pot`,
@@ -90,23 +98,27 @@ and be smoke-tested in compose before writing Helm.
 **1.1 Valkey keyspace split seam.** Add two URLs defaulting to today's single `CACHE_URL` so dev is
 unchanged: `QUEUE_CACHE_URL` (durable: BullMQ queues, QueueEvents, **WorkStore** `result:`/`batch:`,
 `withLock`) and `EPHEMERAL_CACHE_URL` (evictable: metadata/negative cache, `ws:sess:`, Socket.IO
-adapter pub/sub). Implementation: in [configuration.ts](apps/backend/src/config/configuration.ts)
+adapter pub/sub). Implementation: in [configuration.ts](packages/backend-core/src/config/configuration.ts)
 `cache: { url, queueUrl, metadataTtlSeconds, commandTimeoutMs }` (queueUrl ?? url; url unchanged).
-Give [cache.service.ts](apps/backend/src/cache/cache.service.ts) a second iovalkey client for the
-durable side and route `withLock` + new `durableGetJson/setJson/get/set` there; [work-store.service.ts](apps/backend/src/download/work-store.service.ts)
-uses the durable methods (WorkStore results must survive eviction). [jobs.module.ts](apps/backend/src/jobs/jobs.module.ts)
+Give [cache.service.ts](packages/backend-core/src/cache/cache.service.ts) a second iovalkey client for the
+durable side and route `withLock` + new `durableGetJson/setJson/get/set` there; [work-store.service.ts](packages/backend-core/src/workstore/work-store.service.ts)
+uses the durable methods (WorkStore results must survive eviction). [jobs.module.ts](packages/backend-core/src/jobs/jobs.module.ts)
 + the gateway QueueEvents read `cache.queueUrl`; the [redis-io.adapter.ts](apps/backend/src/realtime/redis-io.adapter.ts)
 stays on `cache.url` (ephemeral). **Highest-effort seam — keep both clients' error/timeout config
 identical to the existing one.** Default both to one URL → behavior identical until prod splits them.
+Because `CacheService` lives in `packages/backend-core`, the two-client split is inherited by both the
+`ypd-backend` and `ypd-worker` images with no per-app change.
 
 **1.2 KEDA backlog endpoint + `prioritized` count.** Downloads always set a BullMQ `priority`
 ([download.service.ts](apps/backend/src/download/download.service.ts) `durationPriority`), so waiting
 jobs live in the `prioritized` ZSET, **not** the `wait` list — a KEDA Redis `listLength` scaler would
-read ~0. Fix: (a) add `'prioritized'` to the `getJobCounts(...)` call in
-[queue-depth.collector.ts](apps/worker/src/observability/queue-depth.collector.ts) (now worker-side)
-so the `bullmq_queue_depth` gauge is accurate; (b) add a tiny **cluster-internal** endpoint on the api,
-e.g. `GET /scaling/backlog` → `{ download, convert, total }` where each = `getJobCounts('waiting',
-'prioritized','delayed')` summed. KEDA's `metrics-api` scaler reads `total`. (Alternative noted only:
+read ~0. Fix: (a) add `'prioritized'` to the `getJobCounts('waiting','active','failed','delayed','completed')`
+call in [queue-depth.collector.ts](apps/worker/src/observability/queue-depth.collector.ts) (now
+worker-side) so the `bullmq_queue_depth` gauge is accurate; (b) add a tiny **cluster-internal** endpoint
+on the api, e.g. `GET /scaling/backlog` → `{ download, convert, total }` where each = `getJobCounts('waiting',
+'prioritized','delayed')` summed. KEDA's `metrics-api` scaler reads `total`. The api already holds the
+`Queue` handles ([workers.collector.ts](apps/backend/src/observability/workers.collector.ts) reads them
+via `getWorkers()`), so no new wiring is needed to read counts. (Alternative noted only:
 KEDA `prometheus` scaler if a Prometheus stack is later deployed.)
 
 **1.2b Worker capacity metrics (DONE).** Each worker exports `bullmq_worker_active{pool}` +
@@ -123,16 +135,19 @@ no sticky sessions needed across `backend-api` replicas (the Valkey adapter alre
 cluster-correct). The Nitro WS-upgrade proxy in [server/middleware/socketio.ts](apps/frontend/server/middleware/socketio.ts)
 already proxies the upgrade; the polling HTTP branch becomes unused (leave it).
 
-**1.4 Reconcile `DOWNLOAD_CONCURRENCY` default.** Code default is 6 ([configuration.ts:72](apps/backend/src/config/configuration.ts)),
+**1.4 Reconcile `DOWNLOAD_CONCURRENCY` default.** Code default is 6 ([configuration.ts](packages/backend-core/src/config/configuration.ts)),
 shipped env is 3 ([secrets/backend/.env.example](secrets/backend/.env.example)). Pick one as the
-per-worker HPA unit (recommend keep env-driven, set explicitly in Helm values) and align the example.
+per-worker HPA unit (recommend keep env-driven, set explicitly in Helm values) and align the example
+(bump `.env.example` to 6 to match code).
 
 **1.5 Anonymous-session prune (for the CronJob).** Add `AuthService.pruneAnonymousSessions(olderThanDays)`
 — `prisma.session.deleteMany({ where: { account: null, createdAt: { lt: cutoff } } })` (cascade is
 moot since these have no account) — plus a standalone entry `src/main.prune.ts` (`NestFactory.create
-ApplicationContext`, run prune, `app.close()`, exit). The CronJob runs `node dist/main.prune.js`.
+ApplicationContext`, run prune, `app.close()`, exit). The CronJob runs `node dist/main.prune.js`. Now
+that `auth.service.ts` is pure lifecycle (post-refactor) and still injects `PrismaService`, the method
+sits naturally beside `signOut`/`createSession`.
 
-**1.6 S3 incomplete-multipart-upload lifecycle.** In [storage.service.ts](apps/backend/src/storage/storage.service.ts)
+**1.6 S3 incomplete-multipart-upload lifecycle.** In [storage.service.ts](packages/backend-core/src/storage/storage.service.ts)
 `onModuleInit`, best-effort `PutBucketLifecycleConfiguration` with an `AbortIncompleteMultipartUpload`
 rule (e.g. 1 day); tolerate failure (SeaweedFS may not support it) and log. For managed S3 it just
 works; document the rule for ops too.
@@ -154,11 +169,12 @@ infra/helm/ypd/
   values-ovh.yaml                  # external managed Valkey/PG/S3, scaled replicas
   templates/
     _helpers.tpl                   # image refs, connection-string resolver (Pod vs managed), labels
-    configmap-backend.yaml         # non-secret backend env (knobs; no APP_ROLE — the image is the role)
+    configmap-backend.yaml         # non-secret backend env incl. PROVIDER_*_URL (both API + worker); no APP_ROLE
     configmap-frontend.yaml        # BACKEND_URL, COOKIE_SECURE
     configmap-providers.yaml       # STREAM_SEGMENT_*, POT_PROVIDER_BASE_URL, breaker knobs
     secret.yaml                    # CACHE_URL/QUEUE_CACHE_URL/EPHEMERAL_CACHE_URL, DATABASE_URL,
-                                   #   S3_*, GOOGLE_CLIENT_* — OR reference an existing Secret
+                                   #   S3_*, GOOGLE_CLIENT_* — per-image subset (worker omits
+                                   #   DATABASE_URL + GOOGLE_CLIENT_*) — OR reference an existing Secret
     frontend.{deployment,service,hpa}.yaml
     backend-api.{deployment,service,hpa}.yaml
     backend-worker.{deployment}.yaml + backend-worker.scaledobject.yaml   # KEDA
@@ -183,9 +199,12 @@ infra/helm/ypd/
   HPA CPU/mem; env `BACKEND_URL=http://<release>-backend-api:3000`, `COOKIE_SECURE=true`.
 - **backend-api** — Deployment N≥2; image `ypd-backend`; Service (ClusterIP, port 3000); readiness→`/ready`,
   liveness→`/health`; HPA CPU/mem; `terminationGracePeriodSeconds: 40` + the existing shutdown hooks.
+  Env carries `PROVIDER_*_URL` (anonymous metadata extraction) + `S3_*` (archive streaming) +
+  `DATABASE_URL` + `GOOGLE_CLIENT_*`.
 - **backend-worker** — Deployment; image `ypd-worker`; **no Service for traffic** (headless for scrape
   optional); liveness→`/health`; **KEDA ScaledObject** (Part 4); `terminationGracePeriodSeconds: 40`
-  (drains in-flight jobs; BullMQ re-runs anything stalled via the 90s lock).
+  (drains in-flight jobs; BullMQ re-runs anything stalled via the 90s lock). Env: `CACHE_URL`(+split),
+  `S3_*`, `PROVIDER_*_URL`; **no `DATABASE_URL`, no `GOOGLE_CLIENT_*`** (dropped Prisma + OAuth).
 - **provider-ytdl / provider-youtubejs** — Deployments; Services; readiness→`/ready` (drains a
   saturated/soft-banned replica), liveness→`/health`; HPA CPU/mem; **Pod anti-affinity** (spread
   across nodes → distinct egress IPs for YouTube throttle isolation); env from configmap-providers.
@@ -205,6 +224,21 @@ env/Secret, so **switching is values-only, never code**:
 | Valkey | `valkey.statefulset.yaml` + PVC | managed Redis (Sentinel/cluster) | `CACHE_URL` / `QUEUE_CACHE_URL` / `EPHEMERAL_CACHE_URL` |
 | Postgres | `postgres.statefulset.yaml` + PVC | managed PG (+pgbouncer) | `DATABASE_URL` (+ pool params) |
 | S3 | `seaweedfs.statefulset.yaml` + PVC | real S3 / OVH Object Storage | `S3_ENDPOINT` + `S3_*` |
+
+**Per-image env (the two backend images consume different subsets):**
+
+| Env | `ypd-backend` (API) | `ypd-worker` |
+|---|---|---|
+| `CACHE_URL` / `QUEUE_CACHE_URL` / `EPHEMERAL_CACHE_URL` | ✓ | ✓ |
+| `S3_*` | ✓ (archive stream) | ✓ (artifacts) |
+| `PROVIDER_*_URL`, `PROVIDER_ORDER`, breaker knobs | ✓ (metadata) | ✓ (download) |
+| `DATABASE_URL` (+pool params) | ✓ | ✗ (no Prisma) |
+| `GOOGLE_CLIENT_*` / `GOOGLE_REDIRECT_URI` | ✓ (OAuth) | ✗ |
+| `DOWNLOAD_CONCURRENCY` / `CONVERT_CONCURRENCY` | — | ✓ |
+| ffmpeg runtime | ✗ | ✓ |
+
+`POT_PROVIDER_BASE_URL` stays provider-only (the providers call the `provider-pot` sidecar; neither
+backend image needs it).
 
 In-cluster Valkey StatefulSet reuses the **same ACL command** as compose (incl. `+@pubsub` and
 `+client|list`, the latter for the API's `bullmq_workers_connected` fleet metric via `getWorkers()`). When

@@ -13,7 +13,9 @@ import { parseRedisUrl } from './redis-connection';
       imports: [ConfigModule],
       inject: [AppConfigService],
       useFactory: (config: AppConfigService) => ({
-        connection: { ...parseRedisUrl(config.cache.url), maxRetriesPerRequest: null },
+        // BullMQ queues/workers ride the DURABLE side — jobs must not be evicted under memory
+        // pressure (cache.queueUrl === cache.url in the default single-instance setup).
+        connection: { ...parseRedisUrl(config.cache.queueUrl), maxRetriesPerRequest: null },
       }),
     }),
     BullModule.registerQueue({ name: DOWNLOAD_QUEUE }, { name: CONVERT_QUEUE }),

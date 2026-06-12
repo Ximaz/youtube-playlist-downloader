@@ -22,7 +22,13 @@ export interface StorageConfig {
 }
 
 export interface CacheConfig {
+  /** Ephemeral (evictable) Valkey: metadata/negative cache, `ws:sess:`, OAuth state, the
+   *  Socket.IO adapter pub/sub. Defaults to `CACHE_URL`; override with `EPHEMERAL_CACHE_URL`. */
   url: string;
+  /** Durable (eviction-free) Valkey: BullMQ queues + QueueEvents, the WorkStore `result:`/`batch:`
+   *  state, and `withLock`. Defaults to `CACHE_URL`; override with `QUEUE_CACHE_URL` to split the
+   *  keyspace across two instances in prod. Equal to `url` in dev → behaviour is unchanged. */
+  queueUrl: string;
   metadataTtlSeconds: number;
   /** Per-command timeout (ms): a wedged-but-connected Valkey rejects fast instead of hanging
    *  every code path forever (iovalkey defaults to enableOfflineQueue + no command timeout). */
@@ -100,7 +106,9 @@ export default (): AppConfig => {
       maxAttempts: Number(process.env.S3_MAX_ATTEMPTS ?? 3),
     },
     cache: {
-      url: required('CACHE_URL'),
+      // Single CACHE_URL is the base default for both sides; QUEUE_/EPHEMERAL_ split them in prod.
+      url: process.env.EPHEMERAL_CACHE_URL ?? required('CACHE_URL'),
+      queueUrl: process.env.QUEUE_CACHE_URL ?? required('CACHE_URL'),
       metadataTtlSeconds: Number(process.env.METADATA_CACHE_TTL ?? 86400),
       commandTimeoutMs: Number(process.env.CACHE_COMMAND_TIMEOUT_MS ?? 5000),
     },

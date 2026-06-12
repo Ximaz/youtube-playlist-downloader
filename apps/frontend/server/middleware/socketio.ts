@@ -23,8 +23,10 @@ export default defineEventHandler((event) => {
   // Bind the websocket upgrade proxy once, lazily, on the first request we see. The node-server
   // preset exposes no startup hook for the http.Server, so we grab it from a request's socket.
   // The SPA always issues HTTP requests (HTML, assets, /api/auth/me) before any socket connects,
-  // so the listener is bound well before the first WS upgrade. (If a WS upgrade ever arrives
-  // first, Node routes it through the HTTP handler below and the client falls back to polling.)
+  // so the listener is bound well before the first WS upgrade. The client is websocket-only (no
+  // polling fallback since the ws-only transport change), so this lazy bind is load-bearing: a WS
+  // upgrade that somehow arrived before any HTTP request would fail to connect rather than degrade
+  // — not a concern on the normal path.
   if (!upgradeBound) {
     const server = (event.node.req.socket as { server?: Server }).server;
     if (server) {

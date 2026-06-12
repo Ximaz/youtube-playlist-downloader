@@ -5,6 +5,7 @@ import {
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
+  PutBucketLifecycleConfigurationCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
@@ -55,6 +56,38 @@ export class StorageService implements OnModuleInit {
       this.logger.log(`Bucket "${this.bucket}" not found — creating it`);
       await this.#timed('create-bucket', () =>
         this.client.send(new CreateBucketCommand({ Bucket: this.bucket })),
+      );
+    }
+    await this.#ensureMultipartLifecycle();
+  }
+
+  /** Best-effort: ask S3 to auto-abort multipart uploads left incomplete for a day. A failed
+   *  `uploadStream` (worker crash mid-upload) otherwise leaves orphaned parts that accrue storage
+   *  cost indefinitely. Real S3 / OVH honor this; SeaweedFS may reject it — tolerated and logged,
+   *  never fatal to boot. */
+  async #ensureMultipartLifecycle(): Promise<void> {
+    try {
+      await this.#timed('put-bucket-lifecycle', () =>
+        this.client.send(
+          new PutBucketLifecycleConfigurationCommand({
+            Bucket: this.bucket,
+            LifecycleConfiguration: {
+              Rules: [
+                {
+                  ID: 'abort-incomplete-multipart-uploads',
+                  Status: 'Enabled',
+                  Filter: { Prefix: '' },
+                  AbortIncompleteMultipartUpload: { DaysAfterInitiation: 1 },
+                },
+              ],
+            },
+          }),
+        ),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Could not set incomplete-multipart lifecycle on "${this.bucket}" ` +
+          `(provider may not support it): ${(err as Error).message}`,
       );
     }
   }

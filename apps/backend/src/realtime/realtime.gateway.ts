@@ -66,9 +66,10 @@ export class RealtimeGateway implements OnModuleInit, OnModuleDestroy {
       }
     });
 
-    // BullMQ progress events from both pools → the per-work-item room. Reuses the parsed
-    // Valkey URL (same shape JobsModule uses; no second hand-built connection).
-    const connection = { ...parseRedisUrl(this.config.cache.url), maxRetriesPerRequest: null };
+    // BullMQ progress events from both pools → the per-work-item room. Reads the DURABLE side
+    // (cache.queueUrl) — the same Valkey JobsModule's BullMQ connection uses, so QueueEvents see
+    // the queues regardless of any ephemeral/queue keyspace split.
+    const connection = { ...parseRedisUrl(this.config.cache.queueUrl), maxRetriesPerRequest: null };
     for (const queue of [DOWNLOAD_QUEUE, CONVERT_QUEUE]) {
       const events = new QueueEvents(queue, { connection });
       events.on('progress', ({ data }) => {

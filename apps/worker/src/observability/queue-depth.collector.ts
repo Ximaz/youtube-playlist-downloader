@@ -36,7 +36,16 @@ export class QueueDepthCollector implements OnModuleInit, OnModuleDestroy {
   }
 
   async #sample(queueLabel: string, queue: Queue): Promise<void> {
-    const counts = await queue.getJobCounts('waiting', 'active', 'failed', 'delayed', 'completed');
+    // 'prioritized' is the ZSET that holds waiting jobs which were enqueued with a `priority`
+    // (downloads always set durationPriority) — without it the gauge under-reports the backlog.
+    const counts = await queue.getJobCounts(
+      'waiting',
+      'active',
+      'failed',
+      'delayed',
+      'completed',
+      'prioritized',
+    );
     for (const [state, n] of Object.entries(counts)) {
       this.metrics.bullmqQueueDepth.set({ queue: queueLabel, state }, Number(n));
     }

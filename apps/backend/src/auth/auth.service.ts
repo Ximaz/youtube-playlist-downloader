@@ -168,6 +168,20 @@ export class AuthService {
     ]);
   }
 
+  /**
+   * GC for anonymous (account-less) sessions older than `olderThanDays`, run by the K8s CronJob
+   * via `src/main.prune.ts` — ADR-0014's named follow-up. Account-less rows have no OAuthAccount,
+   * so there's nothing to cascade and no `oauth:` cache keys to clear; signed-in sessions (which
+   * have an account) are never matched. Returns the number of rows deleted.
+   */
+  async pruneAnonymousSessions(olderThanDays: number): Promise<number> {
+    const cutoff = new Date(Date.now() - olderThanDays * 24 * 60 * 60 * 1000);
+    const { count } = await this.prisma.session.deleteMany({
+      where: { account: { is: null }, createdAt: { lt: cutoff } },
+    });
+    return count;
+  }
+
   /** Cheap signed-in check + profile for the navbar. Resolves the Session itself so it can
    * report the `tier`: a valid session (anonymous OR signed-in) returns `tier`; an unknown/stale
    * session returns `{ signedIn: false }` with NO tier, which the frontend reads as "mint a new

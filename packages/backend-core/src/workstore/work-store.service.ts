@@ -48,8 +48,12 @@ const resultKey = (videoId: string, selection: MediaSelection, format: OutputFor
 export class WorkStore {
   constructor(private readonly cache: CacheService) {}
 
+  // WorkStore lives on the cache's DURABLE side (cache.queueUrl): a download result evicted
+  // mid-batch would re-trigger work and break the archive's completeness guarantee, so these
+  // entries must not be subject to the ephemeral cache's eviction policy.
+
   setResult(result: WorkResult): Promise<void> {
-    return this.cache.setJson(
+    return this.cache.durableSetJson(
       resultKey(result.videoId, result.selection, result.format),
       result,
       TTL_SECONDS,
@@ -61,7 +65,7 @@ export class WorkStore {
     selection: MediaSelection,
     format: OutputFormat,
   ): Promise<WorkResult | null> {
-    return this.cache.getJson<WorkResult>(resultKey(videoId, selection, format));
+    return this.cache.durableGetJson<WorkResult>(resultKey(videoId, selection, format));
   }
 
   async getResults(selector: WorkSelector): Promise<WorkResult[]> {
@@ -70,15 +74,15 @@ export class WorkStore {
     const keys = selector.videoIds.map((videoId) =>
       resultKey(videoId, selector.selection, selector.format),
     );
-    const values = await this.cache.mgetJson<WorkResult>(keys);
+    const values = await this.cache.durableMgetJson<WorkResult>(keys);
     return values.filter((r): r is WorkResult => r !== null);
   }
 
   createBatch(group: BatchGroup): Promise<void> {
-    return this.cache.setJson(`batch:${group.batchId}`, group, TTL_SECONDS);
+    return this.cache.durableSetJson(`batch:${group.batchId}`, group, TTL_SECONDS);
   }
 
   getBatch(batchId: string): Promise<BatchGroup | null> {
-    return this.cache.getJson<BatchGroup>(`batch:${batchId}`);
+    return this.cache.durableGetJson<BatchGroup>(`batch:${batchId}`);
   }
 }
