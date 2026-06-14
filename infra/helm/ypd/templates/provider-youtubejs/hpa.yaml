@@ -1,0 +1,3 @@
+{{- if .Values.providerYoutubejs.autoscaling.enabled }}
+{{- include "ypd.hpa" (list . "provider-youtubejs" .Values.providerYoutubejs.autoscaling) }}
+{{- end }}

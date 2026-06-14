@@ -1,0 +1,33 @@
+# Copy to terraform.tfvars (gitignored) and adjust. Proxmox ENDPOINT + API TOKEN come from the
+# environment (PROXMOX_VE_ENDPOINT, PROXMOX_VE_API_TOKEN), not here, so no secret lands in a file.
+
+# --- Proxmox host (goliath) ---
+pve_node             = "goliath"
+proxmox_ssh_username = "malo"
+vm_datastore         = "local"     # holds VM system disks (allows images ✓)
+iso_datastore        = "storage"   # holds the Talos ISO (allows iso ✓)
+data_datastore       = "local"     # persistent data disk (allows images ✓)
+network_bridge       = "vmbr0"
+
+# --- Network (192.168.0.0/24, gw/dns .254) ---
+subnet_prefix = 24
+gateway       = "192.168.0.254"
+dns_servers   = ["192.168.0.254"]
+
+# --- Cluster + topology ---
+cluster_name      = "ypd"
+cluster_vip       = "192.168.0.201"          # K8s API VIP (floating; not a VM)
+loadbalancer_pool = "192.168.0.202/32"       # Cilium hands this to the ingress (where ypd.* resolves)
+control_plane_ips = ["192.168.0.210"]        # 1 control-plane; use 3 IPs for API HA
+worker_ips        = ["192.168.0.211", "192.168.0.212", "192.168.0.213"]
+
+# --- Sizing (goliath: 40 vCPU / 128 GiB; ~150 GiB free on `local`) ---
+cp_cores         = 4
+cp_memory        = 8192
+worker_cores     = 8
+worker_memory    = 16384
+system_disk_size = 20
+data_disk_size   = 40
+
+talos_version           = "v1.12.7"
+disk_encryption_enabled = true

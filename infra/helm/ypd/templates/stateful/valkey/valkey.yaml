@@ -1,0 +1,91 @@
+{{- if .Values.valkey.inCluster }}
+{{- if .Values.valkey.split }}
+{{- fail "valkey.split=true is not implemented in this chart yet — deploy with valkey.split=false (single instance). Splitting into -valkey-queue + -valkey-ephemeral is a documented follow-up." }}
+{{- end }}
+{{- $component := "valkey" }}
+# Single in-cluster Valkey. ACL args below are VERBATIM from docker-compose.yml (keep in sync).
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ypd.valkeyName" . }}
+  labels:
+    {{- include "ypd.labels" (list . $component) | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "ypd.selectorLabels" (list . $component) | nindent 4 }}
+  ports:
+    - name: valkey
+      port: 6379
+      targetPort: valkey
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "ypd.valkeyName" . }}
+  labels:
+    {{- include "ypd.labels" (list . $component) | nindent 4 }}
+spec:
+  serviceName: {{ include "ypd.valkeyName" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list . $component) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ypd.labels" (list . $component) | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        {{- toYaml .Values.persistence.nodeSelector | nindent 8 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: valkey
+          image: {{ .Values.valkey.image }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["sh", "-c"]
+          args:
+            - 'exec valkey-server --user default off --user "$VALKEY_USERNAME" on ">$VALKEY_PASSWORD" "~*" "&*" "+@read" "+@write" "+@list" "+@stream" "+@hash" "+@set" "+@sortedset" "+@scripting" "+@connection" "+client" "-@dangerous" "+info" "+@pubsub" "+client|list"'
+          ports:
+            - name: valkey
+              containerPort: 6379
+          envFrom:
+            - secretRef:
+                name: {{ .Values.valkey.existingSecret }}
+          livenessProbe:
+            tcpSocket:
+              port: valkey
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - 'valkey-cli --user "$VALKEY_USERNAME" -a "$VALKEY_PASSWORD" --no-auth-warning ping | grep -q PONG'
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.valkey.resources | nindent 12 }}
+          securityContext:
+            {{- include "ypd.containerSecurityContext" (list . false) | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.persistence.storageClassName }}
+        resources:
+          requests:
+            storage: {{ .Values.valkey.storage }}
+{{- end }}

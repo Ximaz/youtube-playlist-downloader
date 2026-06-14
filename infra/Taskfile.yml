@@ -1,0 +1,111 @@
+# YPD infrastructure entrypoint (go-task). Run `task --list`.
+version: "3"
+
+dotenv: ["versions.env"]
+
+# Helm 3 with isolated plugin dir: Helm-4 plugins hang on webhook charts. See infra/docs/architecture.md.
+env:
+  HELM_PLUGINS: "{{.HOME}}/.config/helm3-plugins"
+
+vars:
+  TF_DIR: "{{.TASKFILE_DIR}}/terraform"
+  HELM3: "{{.HOME}}/.local/bin/helm3"
+
+tasks:
+  default:
+    desc: List tasks
+    cmds:
+      - task --list
+    silent: true
+
+  # --- Cluster (Terraform + Talos) ---
+  tf:fmt:
+    desc: Format Terraform
+    dir: "{{.TF_DIR}}"
+    cmds: [terraform fmt -recursive]
+
+  tf:validate:
+    desc: Validate Terraform
+    dir: "{{.TF_DIR}}"
+    cmds:
+      - terraform init -input=false -upgrade
+      - terraform validate
+
+  infra:plan:
+    desc: Plan the Proxmox VMs + Talos cluster (needs PROXMOX_VE_ENDPOINT/PROXMOX_VE_API_TOKEN)
+    dir: "{{.TF_DIR}}"
+    cmds:
+      - terraform init -input=false
+      - terraform plan
+
+  infra:up:
+    desc: Create the VMs + bootstrap Talos → writes infra/kubeconfig + infra/talosconfig
+    dir: "{{.TF_DIR}}"
+    cmds:
+      - terraform init -input=false
+      - terraform apply
+
+  infra:down:
+    desc: Destroy the cluster VMs
+    dir: "{{.TF_DIR}}"
+    cmds: [terraform destroy]
+
+  # --- Add-ons + app ---
+  cluster:addons:
+    desc: Install Cilium + cert-manager + ingress-nginx + KEDA + monitoring (helmfile) + local-path storage
+    dir: "{{.TASKFILE_DIR}}/bootstrap"
+    env:
+      KUBECONFIG: "{{.TASKFILE_DIR}}/kubeconfig"
+      SOPS_AGE_KEY_FILE: "{{.HOME}}/.config/sops/age/keys.txt"
+    cmds:
+      - mkdir -p "$HELM_PLUGINS"
+      # Grafana reads its admin login via existingSecret — create the ns + secret before the sync.
+      - kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+      - sops -d ../secrets/monitoring.sops.yaml | kubectl apply -n monitoring -f -
+      - helmfile --helm-binary "{{.HELM3}}" sync
+      - kubectl apply -f storage/local-path.yaml
+
+  deploy:
+    desc: Deploy the ypd Helm chart (in-cluster deps; SOPS-decrypted Secrets applied out-of-band)
+    dir: "{{.TASKFILE_DIR}}"
+    env:
+      KUBECONFIG: "{{.TASKFILE_DIR}}/kubeconfig"
+      SOPS_AGE_KEY_FILE: "{{.HOME}}/.config/sops/age/keys.txt"
+    cmds:
+      - |
+        set -euo pipefail
+        # baseline PodSecurity: provider-youtubejs runs as a named system user.
+        kubectl create namespace ypd --dry-run=client -o yaml | kubectl apply -f -
+        kubectl label --overwrite namespace ypd \
+          pod-security.kubernetes.io/enforce=baseline \
+          pod-security.kubernetes.io/warn=restricted \
+          pod-security.kubernetes.io/audit=restricted
+        # Secrets applied out-of-band: credentials never pass through Helm.
+        sops -d secrets/secrets.sops.yaml | kubectl apply -n ypd -f -
+        "{{.HELM3}}" upgrade --install ypd helm/ypd -n ypd \
+          -f helm/ypd/values-proxmox.yaml --wait --timeout 600s
+
+  # --- Grafana dashboards (grafonnet → committed JSON, bundled by the chart) ---
+  grafana:deps:
+    desc: Vendor grafonnet into infra/grafana/vendor (jsonnet-bundler; pinned by jsonnetfile.lock.json)
+    dir: "{{.TASKFILE_DIR}}/grafana"
+    cmds: [jb install]
+    status: ["test -d vendor"]
+
+  grafana:build:
+    desc: Compile grafana/dashboards/*.jsonnet → helm/ypd/dashboards/*.json (grafonnet)
+    dir: "{{.TASKFILE_DIR}}/grafana"
+    deps: [grafana:deps]
+    cmds:
+      - |
+        set -euo pipefail
+        for f in dashboards/*.jsonnet; do
+          name="$(basename "$f" .jsonnet)"
+          jsonnet -J vendor "$f" > "../helm/ypd/dashboards/ypd-$name.json"
+          echo "built ypd-$name.json"
+        done
+
+  grafana:fmt:
+    desc: Format the grafonnet sources (jsonnetfmt)
+    dir: "{{.TASKFILE_DIR}}/grafana"
+    cmds: [jsonnetfmt -i lib/*.libsonnet dashboards/*.jsonnet]

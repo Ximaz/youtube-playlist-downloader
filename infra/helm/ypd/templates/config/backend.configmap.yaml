@@ -1,0 +1,38 @@
+{{/* Non-secret backend env, shared by backend-api and backend-worker. Credentialed values come from the Secret. */}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ypd.componentName" (list . "backend") }}
+  labels:
+    {{- include "ypd.labels" (list . "backend") | nindent 4 }}
+data:
+  BACKEND_PORT: "3000"
+  # Providers
+  PROVIDER_ORDER: {{ .Values.config.providers.order | quote }}
+  PROVIDER_YTDL_URL: "http://{{ include "ypd.componentName" (list . "provider-ytdl") }}:{{ .Values.providerYtdl.port }}"
+  PROVIDER_YOUTUBEJS_URL: "http://{{ include "ypd.componentName" (list . "provider-youtubejs") }}:{{ .Values.providerYoutubejs.port }}"
+  PROVIDER_TIMEOUT_MS: {{ .Values.config.providers.timeoutMs | quote }}
+  PROVIDER_GLOBAL_CONCURRENCY: {{ .Values.config.providers.globalConcurrency | quote }}
+  PROVIDER_BREAKER_THRESHOLD: {{ .Values.config.providers.breakerThreshold | quote }}
+  PROVIDER_BREAKER_COOLDOWN_MS: {{ .Values.config.providers.breakerCooldownMs | quote }}
+  # Worker pools
+  DOWNLOAD_CONCURRENCY: {{ .Values.config.worker.downloadConcurrency | quote }}
+  CONVERT_CONCURRENCY: {{ .Values.config.worker.convertConcurrency | quote }}
+  # Cache (credentialed URL is in the Secret)
+  METADATA_CACHE_TTL: {{ .Values.config.cache.metadataTtl | quote }}
+  CACHE_COMMAND_TIMEOUT_MS: {{ .Values.config.cache.commandTimeoutMs | quote }}
+  # S3 client (endpoint resolves to in-cluster SeaweedFS Service when inCluster)
+  S3_ENDPOINT: {{ include "ypd.s3Endpoint" . | quote }}
+  S3_REGION: {{ .Values.config.s3.region | quote }}
+  S3_BUCKET: {{ .Values.config.s3.bucket | quote }}
+  S3_FORCE_PATH_STYLE: {{ .Values.config.s3.forcePathStyle | quote }}
+  S3_CONNECTION_TIMEOUT_MS: {{ .Values.config.s3.connectionTimeoutMs | quote }}
+  S3_REQUEST_TIMEOUT_MS: {{ .Values.config.s3.requestTimeoutMs | quote }}
+  S3_MAX_ATTEMPTS: {{ .Values.config.s3.maxAttempts | quote }}
+  # API-only: migrations owned by the pre-flight Job, never a serving pod.
+  MIGRATE_ON_START: "false"
+  TMPDIR: "/tmp"
+  {{- if .Values.google.enabled }}
+  # Must equal the redirect URI registered in the Google console.
+  GOOGLE_REDIRECT_URI: {{ include "ypd.googleRedirectUri" . | quote }}
+  {{- end }}

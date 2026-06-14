@@ -1,0 +1,40 @@
+# ingress-nginx — cluster's single type=LoadBalancer entrypoint. See infra/docs/architecture.md.
+controller:
+  kind: Deployment
+  replicaCount: 2
+
+  service:
+    type: LoadBalancer
+    annotations:
+      # Cilium LB-IPAM request; keep in sync with cilium/lb-pool.yaml.
+      lbipam.cilium.io/ips: "192.168.0.202"
+
+  # Default IngressClass so the app Ingress needs no explicit className.
+  ingressClassResource:
+    default: true
+
+  # Long timeouts for Socket.IO + archive streaming; body-size 0 disables the upload cap.
+  config:
+    proxy-read-timeout: "3600"
+    proxy-send-timeout: "3600"
+    proxy-body-size: "0"
+    use-forwarded-headers: "true"
+
+  # Spread replicas across nodes.
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: ingress-nginx
+                app.kubernetes.io/component: controller
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi

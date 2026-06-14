@@ -1,0 +1,21 @@
+{{- if .Values.monitoring.enabled }}
+{{/* One ConfigMap per dashboards/*.json — the kube-prometheus-stack Grafana sidecar (searchNamespace:
+     ALL) auto-imports any ConfigMap labelled grafana_dashboard. The JSON is generated from grafonnet
+     sources under infra/grafana/ via `task grafana:build` and committed; this template just bundles
+     whatever JSON is present, so adding a dashboard = add a .jsonnet + rebuild (no template change).
+     Loaded with .Files.Get so Grafana's own {{ legend }} syntax is not processed by Helm. */}}
+{{- range $path, $_ := .Files.Glob "dashboards/*.json" }}
+{{- $name := base $path | trimSuffix ".json" | trimPrefix "ypd-" }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ypd.componentName" (list $ (printf "grafana-%s" $name)) }}
+  labels:
+    grafana_dashboard: "1"
+    {{- include "ypd.labels" (list $ "monitoring") | nindent 4 }}
+data:
+  {{ base $path }}: |-
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
+{{- end }}

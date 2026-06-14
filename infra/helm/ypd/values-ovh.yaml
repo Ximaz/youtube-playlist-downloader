@@ -1,0 +1,29 @@
+# OVH (managed-cloud) overlay — flip every stateful dep to a managed service, values-only.
+# Credentialed URLs (CACHE_URL / DATABASE_URL / S3_*) come from the referenced Secret. STARTING POINT: fill host + endpoints.
+
+secrets:
+  existingSecret: ypd-backend-secrets
+  existingSecretWorker: ypd-worker-secrets
+
+valkey:
+  inCluster: false # managed Redis/Valkey — CACHE_URL (+split) supplied via the Secret
+postgres:
+  inCluster: false # managed Postgres — DATABASE_URL via the Secret
+seaweedfs:
+  inCluster: false # real S3 / OVH Object Storage
+
+config:
+  s3:
+    endpoint: "https://s3.gra.io.cloud.ovh.net" # example OVH endpoint; S3_* creds via the Secret
+    region: gra
+    forcePathStyle: "false" # real S3 uses virtual-hosted-style
+
+google:
+  enabled: true
+
+ingress:
+  enabled: true
+  host: ypd.example.com # placeholder — set the real, owned domain
+  tls:
+    enabled: true
+    issuer: letsencrypt-prod # a real ACME ClusterIssuer (define separately)

@@ -1,0 +1,39 @@
+YPD {{ .Chart.AppVersion }} deployed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Images:           {{ .Values.global.registry }}/ypd-* : {{ .Values.global.imageTag }}
+In-cluster deps:  valkey={{ .Values.valkey.inCluster }}  postgres={{ .Values.postgres.inCluster }}  s3/seaweedfs={{ .Values.seaweedfs.inCluster }}
+Worker autoscale: KEDA on the API's /scaling/backlog (min {{ .Values.worker.scaledObject.minReplicas }} / max {{ .Values.worker.scaledObject.maxReplicas }})
+
+{{- if .Values.ingress.enabled }}
+
+Reach it at:      https://{{ .Values.ingress.host }}/   (TLS issuer: {{ .Values.ingress.tls.issuer }})
+  • Point DNS at the ingress LoadBalancer IP, e.g. dnsmasq:  address=/{{ .Values.ingress.host }}/192.168.0.202
+  • The cert chains to the {{ .Values.ingress.tls.issuer }} CA — trust ypd-ca-tls's ca.crt on test devices to drop the browser warning.
+{{- end }}
+
+{{- if .Values.google.enabled }}
+
+OAuth is ENABLED. The Google console redirect URI MUST be exactly:
+  {{ include "ypd.googleRedirectUri" . }}
+{{- else }}
+
+OAuth is DISABLED (google.enabled=false). Anonymous downloads work; sign-in/playlists need real
+GOOGLE_CLIENT_ID/SECRET in the backend Secret + google.enabled=true + the registered redirect URI.
+{{- end }}
+
+{{- if and .Values.secrets.create (not .Values.secrets.existingSecret) }}
+
+  ############################################################################
+  #  WARNING: secrets.create=true — a Secret was rendered FROM CHART VALUES. #
+  #  This is a DEV/SMOKE path only. NEVER commit real credentials in values. #
+  #  In prod set secrets.existingSecret and create the Secret out-of-band    #
+  #  (infra/secrets/secrets.sops.yaml → kubectl apply).                      #
+  ############################################################################
+{{- else }}
+
+Secrets: referencing existingSecret "{{ include "ypd.backendSecretName" . }}" (+ worker "{{ include "ypd.workerSecretName" . }}").
+Verify they exist:  kubectl -n {{ .Release.Namespace }} get secret {{ include "ypd.backendSecretName" . }} {{ include "ypd.workerSecretName" . }}
+{{- end }}
+
+Watch rollout:      kubectl -n {{ .Release.Namespace }} get pods -w
+Migration ran via:  job/{{ include "ypd.componentName" (list . "migrate") }} (post-install hook)

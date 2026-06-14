@@ -1,0 +1,36 @@
+# Local TLS trust chain (self-signed root → CA ClusterIssuer). See infra/docs/architecture.md.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ypd-selfsigned
+spec:
+  selfSigned: {}
+---
+# Root CA cert; namespace must be cert-manager's --cluster-resource-namespace.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ypd-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: YPD Local CA
+  secretName: ypd-ca-tls
+  duration: 87600h # 10 years
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: ypd-selfsigned
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+# CA ClusterIssuer the Ingress references (cert-manager.io/cluster-issuer: ypd-ca).
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ypd-ca
+spec:
+  ca:
+    secretName: ypd-ca-tls

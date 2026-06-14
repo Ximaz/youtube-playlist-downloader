@@ -1,0 +1,92 @@
+# kube-prometheus-stack — Prometheus + Grafana + node-exporter + kube-state-metrics for YPD.
+# See infra/docs/architecture.md (Observability). Grafana: https://grafana.pragmacode.fr (ypd-ca cert).
+fullnameOverride: kube-prometheus-stack
+
+# No alerting yet — drop Alertmanager to save the single data node's RAM/disk.
+alertmanager:
+  enabled: false
+
+# Talos control-plane components aren't scrapeable the usual way (and Cilium replaces kube-proxy):
+# disabling these avoids permanently-down targets.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+kubeEtcd:
+  enabled: false
+
+prometheusOperator:
+  # Disable the admission webhook (+ its kube-webhook-certgen jobs): we ship no PrometheusRules that
+  # need server-side validation, and the webhook is the Helm-3 wait/hook hang source. The operator's
+  # OWN serving TLS is a separate toggle (default on) whose cert is minted by that same certgen Job —
+  # it MUST be off too, else the operator hangs in ContainerCreating mounting a secret never created.
+  tls:
+    enabled: false
+  admissionWebhooks:
+    enabled: false
+    patch:
+      enabled: false
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 256Mi }
+
+prometheus:
+  prometheusSpec:
+    retention: 7d
+    retentionSize: 8GB # safety valve: evict before the 10Gi PVC (shared /var/mnt/data) fills
+    # Discover the YPD chart's ServiceMonitors/PodMonitors/Probes across namespaces (no release label).
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    nodeSelector:
+      ypd.io/data: "true" # pin to the data node (only it has local-path-backed /var/mnt/data)
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+    resources:
+      requests: { cpu: 200m, memory: 512Mi }
+      limits: { memory: 1536Mi }
+
+grafana:
+  admin:
+    existingSecret: grafana-admin # applied out-of-band from SOPS by `task cluster:addons`
+    userKey: admin-user
+    passwordKey: admin-password
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: ypd-ca
+    hosts:
+      - grafana.pragmacode.fr
+    tls:
+      - secretName: grafana-tls
+        hosts:
+          - grafana.pragmacode.fr
+  grafana.ini:
+    server:
+      root_url: https://grafana.pragmacode.fr
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      searchNamespace: ALL # import the YPD dashboard ConfigMap from the ypd namespace
+    datasources:
+      enabled: true
+  persistence:
+    enabled: true
+    storageClassName: local-path
+    size: 2Gi
+  nodeSelector:
+    ypd.io/data: "true"
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 256Mi }

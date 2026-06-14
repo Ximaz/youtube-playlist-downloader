@@ -4,6 +4,7 @@ import { ApiTags } from '@nestjs/swagger';
 import {
   AppConfigService,
   CacheService,
+  MetricsService,
   ProviderRegistry,
   StorageService,
 } from '@ypd/backend-core';
@@ -25,6 +26,7 @@ export class HealthController {
     private readonly storage: StorageService,
     private readonly providers: ProviderRegistry,
     private readonly config: AppConfigService,
+    private readonly metrics: MetricsService,
   ) {}
 
   /** Liveness probe: cheap, dependency-free. The container is running and the event loop
@@ -59,6 +61,7 @@ export class HealthController {
       const check = providerChecks[i];
       if (provider && check) checks[`provider:${provider.name}`] = check;
     }
+    this.metrics.setReadiness('backend', checks);
 
     // Infra (db/valkey/s3) is non-negotiable. Providers are ordered-fallback, so the backend
     // is still ready as long as AT LEAST ONE provider answers — requiring ALL of them would

@@ -1,0 +1,10 @@
+{{/* Frontend (Nuxt BFF) runtime env. BACKEND_URL is server-only (browser never sees it). */}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ypd.componentName" (list . "frontend") }}
+  labels:
+    {{- include "ypd.labels" (list . "frontend") | nindent 4 }}
+data:
+  BACKEND_URL: "http://{{ include "ypd.componentName" (list . "backend-api") }}:{{ .Values.backendApi.port }}"
+  COOKIE_SECURE: {{ .Values.frontend.cookieSecure | quote }}

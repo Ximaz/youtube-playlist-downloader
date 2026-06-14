@@ -1,0 +1,53 @@
+{{- if .Values.prune.enabled }}
+{{/* Anonymous-session GC CronJob (runs main.prune.js). concurrencyPolicy Forbid: runs must not overlap. */}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "ypd.componentName" (list . "prune-sessions") }}
+  labels:
+    {{- include "ypd.labels" (list . "prune-sessions") | nindent 4 }}
+spec:
+  schedule: {{ .Values.prune.schedule | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            {{- include "ypd.selectorLabels" (list . "prune-sessions") | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "ypd.serviceAccountName" (list . "backend") }}
+          automountServiceAccountToken: false
+          securityContext:
+            {{- include "ypd.podSecurityContext" (list . 1000) | nindent 12 }}
+          containers:
+            - name: prune
+              image: {{ include "ypd.image" (list . .Values.images.backend) }}
+              imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+              command: ["node", "dist/main.prune.js"]
+              env:
+                - name: PRUNE_OLDER_THAN_DAYS
+                  value: {{ .Values.prune.olderThanDays | quote }}
+              envFrom:
+                - configMapRef:
+                    name: {{ include "ypd.componentName" (list . "backend") }}
+                - secretRef:
+                    name: {{ include "ypd.backendSecretName" . }}
+              resources:
+                requests: { cpu: 50m, memory: 128Mi }
+                limits: { memory: 256Mi }
+              securityContext:
+                {{- include "ypd.containerSecurityContext" (list . true) | nindent 16 }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: tmp
+              emptyDir: {}
+{{- end }}

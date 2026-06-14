@@ -1,0 +1,16 @@
+apiVersion: v2
+name: ypd
+description: >-
+  YPD — open-source YouTube Playlist Downloader. A cloud-agnostic Kubernetes chart: every stateful
+  dependency (Valkey / Postgres / S3) is pluggable in-cluster or managed (values-only), the worker
+  tier autoscales on queue backlog via KEDA, and secrets are referenced (never templated) so real
+  credentials stay out of git.
+type: application
+version: 0.1.0
+# Image tags driven by .Values.global.imageTag (GHCR), independent of chart version.
+appVersion: "latest"
+home: https://github.com/ximaz/youtube-playlist-downloader
+sources:
+  - https://github.com/ximaz/youtube-playlist-downloader
+maintainers:
+  - name: ximaz

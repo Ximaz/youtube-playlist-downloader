@@ -1,0 +1,15 @@
+{{- $component := "provider-youtubejs" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ypd.componentName" (list . $component) }}
+  labels:
+    {{- include "ypd.labels" (list . $component) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "ypd.selectorLabels" (list . $component) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.providerYoutubejs.port }}
+      targetPort: http

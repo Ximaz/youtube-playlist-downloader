@@ -1,0 +1,21 @@
+# Cilium LB-IPAM pool + L2 announcement — bare-metal LoadBalancer. See infra/docs/architecture.md.
+apiVersion: cilium.io/v2alpha1
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: ypd
+spec:
+  blocks:
+    - cidr: "192.168.0.202/32" # keep in sync with terraform `loadbalancer_pool`
+---
+apiVersion: cilium.io/v2alpha1
+kind: CiliumL2AnnouncementPolicy
+metadata:
+  name: ypd
+spec:
+  loadBalancerIPs: true
+  interfaces:
+    - "ens18" # the Proxmox VirtIO NIC name on the Talos nodes
+  nodeSelector:
+    matchExpressions:
+      - key: kubernetes.io/os
+        operator: Exists # all nodes

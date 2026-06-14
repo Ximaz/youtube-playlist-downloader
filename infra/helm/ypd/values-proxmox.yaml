@@ -1,0 +1,32 @@
+# Proxmox/Talos overlay — in-cluster everything, local domain, self-signed CA, OAuth off first.
+# Real creds live in infra/secrets/secrets.sops.yaml (age-encrypted), applied out-of-band.
+
+global:
+  imageTag: latest
+
+secrets:
+  existingSecret: ypd-backend-secrets
+  existingSecretWorker: ypd-worker-secrets
+
+valkey:
+  inCluster: true
+postgres:
+  inCluster: true
+seaweedfs:
+  inCluster: true
+
+google:
+  enabled: true # GOOGLE_CLIENT_ID/SECRET live in ypd-backend-secrets (SOPS); redirect URI derived from ingress.host
+
+ingress:
+  enabled: true
+  host: ypd.pragmacode.fr
+  tls:
+    enabled: true
+    issuer: ypd-ca
+
+networkPolicy:
+  enabled: true # validated against the running app — see infra/docs/architecture.md §5
+
+monitoring:
+  enabled: true # ServiceMonitors/PodMonitor/Probes + Grafana dashboard (kube-prometheus-stack add-on)

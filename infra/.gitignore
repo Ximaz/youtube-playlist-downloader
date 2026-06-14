@@ -1,0 +1,43 @@
+# --- Terraform ---
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars            # real values (endpoints/IPs are non-secret but env-specific) — keep out of git
+!*.tfvars.example
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# --- Proxmox API credentials sourced at deploy time (never commit) ---
+.proxmox.env
+*.proxmox.env
+
+# --- Generated cluster credentials (mTLS — treat as secrets) ---
+kubeconfig
+talosconfig
+*.kubeconfig
+_out/
+
+# --- SOPS / age keys + encrypted secrets ---
+# *.sops.yaml is age-encrypted (technically safe to commit), but this is an open-source repo, so keep
+# REAL credentials out of git entirely — commit only .sops.yaml (config) + secrets.example.yaml.
+# Drop secrets.sops.yaml from this list if you prefer a committed-encrypted (GitOps) workflow.
+*.agekey
+age.key
+keys.txt
+*.vaultpass
+secrets/secrets.sops.yaml
+secrets/monitoring.sops.yaml
+
+# --- Decrypted secret output (never commit) ---
+secrets/*.plain.yaml
+secrets/secrets.yaml
+secrets/monitoring.yaml
+
+# --- grafonnet vendored libs (restored by `jb install` from jsonnetfile.lock.json) ---
+grafana/vendor/

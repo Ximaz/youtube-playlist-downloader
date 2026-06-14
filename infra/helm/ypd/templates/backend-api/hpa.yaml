@@ -1,0 +1,3 @@
+{{- if .Values.backendApi.autoscaling.enabled }}
+{{- include "ypd.hpa" (list . "backend-api" .Values.backendApi.autoscaling) }}
+{{- end }}

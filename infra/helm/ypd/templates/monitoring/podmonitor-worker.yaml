@@ -1,0 +1,22 @@
+{{- if .Values.monitoring.enabled }}
+{{/* The worker has no Service (KEDA-scaled, no inbound traffic), so it can't be a ServiceMonitor
+     target. A PodMonitor scrapes each worker pod directly — which is what we want anyway: the worker
+     capacity gauges (bullmq_worker_active/concurrency) are per-instance. */}}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "ypd.componentName" (list . "backend-worker") }}
+  labels:
+    {{- include "ypd.labels" (list . "backend-worker") | nindent 4 }}
+spec:
+  namespaceSelector:
+    matchNames: [{{ .Release.Namespace }}]
+  selector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list . "backend-worker") | nindent 6 }}
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.monitoring.interval }}
+      scrapeTimeout: {{ .Values.monitoring.scrapeTimeout }}
+{{- end }}

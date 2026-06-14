@@ -1,0 +1,318 @@
+{{- if .Values.networkPolicy.enabled }}
+{{/* Per-component NetworkPolicies (Cilium-enforced). See infra/docs/architecture.md §5.
+     allow-dns selects ALL pods for egress, so every pod is egress-default-deny — each policy below
+     re-grants exactly what that component needs. Kubelet probes are local-host→pod and allowed by
+     Cilium regardless of policy. Ingress is restricted only on the components something connects TO.
+     When monitoring.enabled, the scrape/blackbox ports additionally admit the monitoring namespace
+     (Prometheus + blackbox-exporter) — see the monitoring.enabled blocks below. */}}
+{{- $ns := .Release.Namespace }}
+---
+# allow-dns: every ypd pod may resolve kube-dns. Selecting all pods makes egress default-deny.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ypd.componentName" (list . "allow-dns") }}
+  labels:
+    {{- include "ypd.labels" (list . "netpol") | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# frontend: ingress from ingress-nginx only; egress to backend-api.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ypd.componentName" (list . "frontend") }}
+  labels:
+    {{- include "ypd.labels" (list . "frontend") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list . "frontend") | nindent 6 }}
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - { protocol: TCP, port: {{ .Values.frontend.port }} }
+    {{- if .Values.monitoring.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.monitoring.namespace }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.frontend.port }} } # /healthz blackbox
+    {{- end }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "ypd.selectorLabels" (list . "backend-api") | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.backendApi.port }} }
+---
+# backend-api: ingress :3000 from frontend + the KEDA namespace (fences /scaling/backlog); egress to
+# every dep + the internet on :443 (Google OAuth + YouTube Data API).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ypd.componentName" (list . "backend-api") }}
+  labels:
+    {{- include "ypd.labels" (list . "backend-api") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list . "backend-api") | nindent 6 }}
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ypd.selectorLabels" (list . "frontend") | nindent 14 }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: keda
+      ports:
+        - { protocol: TCP, port: {{ .Values.backendApi.port }} }
+    {{- if .Values.monitoring.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.monitoring.namespace }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.backendApi.port }} } # /metrics scrape + /health,/ready blackbox
+    {{- end }}
+  egress:
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: valkey } }
+      ports:
+        - { protocol: TCP, port: 6379 }
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: postgres } }
+      ports:
+        - { protocol: TCP, port: 5432 }
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: seaweedfs } }
+      ports:
+        - { protocol: TCP, port: 8333 }
+    - to:
+        - podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: ["provider-ytdl", "provider-youtubejs"] }
+      ports:
+        - { protocol: TCP, port: {{ .Values.providerYtdl.port }} }
+        - { protocol: TCP, port: {{ .Values.providerYoutubejs.port }} }
+    - to: [{ ipBlock: { cidr: 0.0.0.0/0 } }] # Google OAuth + YouTube Data API
+      ports:
+        - { protocol: TCP, port: 443 }
+---
+# backend-worker: egress to valkey + S3 + providers (no Postgres, no internet). No ingress (no Service).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ypd.componentName" (list . "backend-worker") }}
+  labels:
+    {{- include "ypd.labels" (list . "backend-worker") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list . "backend-worker") | nindent 6 }}
+  policyTypes: ["Egress"{{ if .Values.monitoring.enabled }}, "Ingress"{{ end }}]
+  {{- if .Values.monitoring.enabled }}
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.monitoring.namespace }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.worker.port }} } # /metrics scrape + /health,/ready blackbox
+  {{- end }}
+  egress:
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: valkey } }
+      ports:
+        - { protocol: TCP, port: 6379 }
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: seaweedfs } }
+      ports:
+        - { protocol: TCP, port: 8333 }
+    - to:
+        - podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: ["provider-ytdl", "provider-youtubejs"] }
+      ports:
+        - { protocol: TCP, port: {{ .Values.providerYtdl.port }} }
+        - { protocol: TCP, port: {{ .Values.providerYoutubejs.port }} }
+---
+# providers: ingress from the backend tiers; egress to the internet (:80/:443) + the PO-token sidecar.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ypd.componentName" (list . "providers") }}
+  labels:
+    {{- include "ypd.labels" (list . "providers") | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app.kubernetes.io/name, operator: In, values: ["provider-ytdl", "provider-youtubejs"] }
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: ["backend-api", "backend-worker"] }
+    {{- if .Values.monitoring.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.monitoring.namespace }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.providerYtdl.port }} }
+        - { protocol: TCP, port: {{ .Values.providerYoutubejs.port }} }
+    {{- end }}
+  egress:
+    - to: [{ ipBlock: { cidr: 0.0.0.0/0 } }] # YouTube / googlevideo (IPs not pinnable)
+      ports:
+        - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 80 }
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "ypd.selectorLabels" (list . "provider-pot") | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.providerPot.port }} }
+---
+# provider-pot: ingress from the providers; egress to the internet on :443 (Google BotGuard).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ypd.componentName" (list . "provider-pot") }}
+  labels:
+    {{- include "ypd.labels" (list . "provider-pot") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list . "provider-pot") | nindent 6 }}
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: ["provider-ytdl", "provider-youtubejs"] }
+      ports:
+        - { protocol: TCP, port: {{ .Values.providerPot.port }} }
+  egress:
+    - to: [{ ipBlock: { cidr: 0.0.0.0/0 } }]
+      ports:
+        - { protocol: TCP, port: 443 }
+---
+# valkey: ingress :6379 from backend-api + backend-worker + the prune CronJob.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ypd.componentName" (list . "valkey") }}
+  labels:
+    {{- include "ypd.labels" (list . "valkey") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list . "valkey") | nindent 6 }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: ["backend-api", "backend-worker", "prune-sessions"] }
+      ports:
+        - { protocol: TCP, port: 6379 }
+---
+# postgres: ingress :5432 from backend-api + the migrate Job + the prune CronJob.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ypd.componentName" (list . "postgres") }}
+  labels:
+    {{- include "ypd.labels" (list . "postgres") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list . "postgres") | nindent 6 }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: ["backend-api", "migrate", "prune-sessions"] }
+      ports:
+        - { protocol: TCP, port: 5432 }
+---
+# seaweedfs: ingress :8333 from backend-api + backend-worker.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ypd.componentName" (list . "seaweedfs") }}
+  labels:
+    {{- include "ypd.labels" (list . "seaweedfs") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list . "seaweedfs") | nindent 6 }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app.kubernetes.io/name, operator: In, values: ["backend-api", "backend-worker"] }
+      ports:
+        - { protocol: TCP, port: 8333 }
+---
+# migrate Job: egress to Postgres only (its initContainer waits on it, then runs prisma migrate deploy).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ypd.componentName" (list . "migrate") }}
+  labels:
+    {{- include "ypd.labels" (list . "migrate") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list . "migrate") | nindent 6 }}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: postgres } }
+      ports:
+        - { protocol: TCP, port: 5432 }
+---
+# prune CronJob: egress to Postgres + Valkey.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ypd.componentName" (list . "prune-sessions") }}
+  labels:
+    {{- include "ypd.labels" (list . "prune-sessions") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list . "prune-sessions") | nindent 6 }}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: postgres } }
+      ports:
+        - { protocol: TCP, port: 5432 }
+    - to:
+        - podSelector: { matchLabels: { app.kubernetes.io/name: valkey } }
+      ports:
+        - { protocol: TCP, port: 6379 }
+{{- end }}

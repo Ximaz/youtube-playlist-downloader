@@ -239,3 +239,68 @@ API-owned (the worker entrypoint runs none). CI builds both images; the lint/typ
 image/Dockerfile to maintain, and `provider-client` needs an explicit `Readable.fromWeb(... as ...)` cast
 because backend-core's `@aws-sdk`-importing typecheck pulls the DOM `ReadableStream` into scope.
 **Supersedes ADR 0015.**
+
+## 0019 — Kubernetes on Talos: Terraform + Cilium + Helmfile, vault-free secrets
+The cloud-agnostic deployment (Workstream F) is a 4-node **Talos Linux** cluster on Proxmox,
+provisioned by **Terraform** (`siderolabs/talos` + `bpg/proxmox`) — immutable, API-only, no SSH. CNI,
+kube-proxy replacement, and the bare-metal LoadBalancer are all **Cilium** (LB-IPAM + L2 announcement,
+so a `Service type=LoadBalancer` gets a LAN IP with no MetalLB). Day-2 delivery is **imperative**
+(Helmfile + Taskfile), not GitOps: add-ons (`cert-manager`, `ingress-nginx`, KEDA, local-path) via a
+helmfile; the app via one **cloud-agnostic Helm chart** (`infra/helm/ypd`) where every stateful dep
+(Valkey/Postgres/S3) is pluggable in-cluster ↔ managed with values only. Worker autoscaling is **KEDA**
+on the API's `GET /scaling/backlog` (metrics-api scaler — no Prometheus); stock CPU HPAs elsewhere.
+
+**Secrets are vault-free, mirroring ADR-0008's "encrypt the substrate, don't add a key-management
+surface."** Two layers: (1) at rest — Talos **LUKS2** encrypts etcd's partitions (ADR-0008's LUKS),
+so a Secret is ciphertext on disk; (2) provisioning — real credentials live ONLY in an **age-encrypted
+SOPS file** (`infra/secrets/secrets.sops.yaml`, only `stringData` encrypted) applied out-of-band; the
+chart **references Secrets by name (`existingSecret`) and never templates a credential value**, so
+`helm get manifest`/git never expose one. Per-image Secret split (the worker Secret omits
+`DATABASE_URL` + `GOOGLE_*`); every workload runs under a dedicated ServiceAccount with
+`automountServiceAccountToken: false` and no Secret RBAC. `GET /scaling/backlog` stays **unauthenticated**
+(it's `@ApiExcludeController`, leaks 3 integers, is ClusterIP-internal) — fenced by a NetworkPolicy
+rather than a KEDA `TriggerAuthentication` token, which would re-introduce the key surface ADR-0008
+avoids. **Trade-offs:** (a) the cross-equality invariant (in-cluster dep creds must equal the creds
+embedded in `CACHE_URL`/`DATABASE_URL`/`S3_*`) is unenforced by code — the SOPS example documents it and
+a future Taskfile `validate` should assert it; (b) the SOPS age private key is operator-held and rotation
+is a re-encrypt + redeploy; (c) Talos machine secrets currently live in `terraform.tfstate` (gitignored)
+— move to an encrypted remote backend before sharing/HA; (d) single-replica StatefulSets on a node-local
+disk give persistence without HA (Longhorn is the documented HA upgrade). **Tooling note:** the toolchain
+pins **Helm 3** — Helm 4's reworked plugin format + `--wait` hang helmfile and the webhook charts and
+break `helm secrets`.
+
+## 0020 — Observability: kube-prometheus-stack + blackbox, app-side readiness gauge, no Alertmanager
+Monitoring is the **kube-prometheus-stack** (Prometheus Operator + Prometheus + Grafana + node-exporter
++ kube-state-metrics) plus **blackbox-exporter**, installed by the bootstrap helmfile into a
+`monitoring` namespace; the app chart ships the wiring behind `monitoring.enabled`. node-exporter +
+cAdvisor + kube-state-metrics give CPU/mem/disk/network for free; the app's existing `/metrics` is
+scraped by **ServiceMonitors** (backend-api + both providers) and a **PodMonitor** for the worker
+(no Service, and per-pod scraping matches the per-instance worker capacity gauges). The operator is set
+to select monitors/probes across all namespaces, so the chart needs no `release` label coupling.
+
+The four YPD dashboards (Overview, Queue & Workers, Providers & Storage, Health & Readiness) are
+**authored as code in Jsonnet with grafonnet** (`infra/grafana/`, pinned via `jsonnetfile.lock.json`);
+`task grafana:build` compiles them to committed JSON that the chart bundles per-file via `.Files.Glob`,
+so adding a dashboard is a new `.jsonnet` + rebuild with no template change. Cluster/node/pod
+dashboards come bundled with the stack.
+
+The JSON `/health`,`/ready`,`/healthz` routes become Prometheus targets via two **Probe** CRs pointed
+at blackbox (200-only, so a degraded `/ready` 503 flips `probe_success`). For the dependency breakdown
+*inside* `/ready`, each handler publishes **`ypd_readiness_check{component,check}`** (1/0) via a small
+`MetricsService.setReadiness` in backend-core — the one app-code change — so Grafana shows exactly which
+of db/valkey/s3/provider:* is down per pod. The worker `/ready` is intentionally gauge-only (no Service
+to blackbox-probe). Grafana is exposed at a dedicated **`grafana.pragmacode.fr`** Ingress (own cert from
+the `ypd-ca` issuer); its admin login is a **SOPS+age** secret (same vault-free model as ADR-0019),
+applied out-of-band before the stack syncs — never templated by Helm.
+
+**Decisions / trade-offs:** (a) **Alertmanager off** — no alerting need yet; saves the single data
+node's RAM/disk (revisit when on-call matters). (b) **Helm-3 webhook-hang avoidance** (same class as
+ADR-0019's cert-manager/ingress-nginx): the release uses `wait:false` + **disables the operator
+admission webhook** (and its certgen jobs) + a `kubectl rollout status` postsync gate; this also
+guarantees the monitor CRDs exist before `task deploy`, so **addons must precede deploy**. (c)
+**Footprint** — Prometheus is pinned to the data node with a 10Gi PVC and 7d/8GB retention so it can't
+fill `/var/mnt/data` next to the app PVCs; the node-exporter disk panel is the early warning. (d) Talos
+control-plane ServiceMonitors (etcd/scheduler/controller-manager/kube-proxy) are disabled to avoid
+permanently-down targets. (e) The `monitoring` namespace keeps **no restrictive PodSecurity labels** —
+node-exporter needs hostPath/hostNetwork. (f) With NetworkPolicies on, each component opens its scrape
+port to the `monitoring` namespace only (the worker gains its first ingress rule).
