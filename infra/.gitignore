@@ -32,7 +32,12 @@ age.key
 keys.txt
 *.vaultpass
 secrets/secrets.sops.yaml
+secrets/monitoring.sops.yaml
 
 # --- Decrypted secret output (never commit) ---
 secrets/*.plain.yaml
 secrets/secrets.yaml
+secrets/monitoring.yaml
+
+# --- grafonnet vendored libs (restored by `jb install` from jsonnetfile.lock.json) ---
+grafana/vendor/

@@ -1,0 +1,49 @@
+{{- if .Values.monitoring.enabled }}
+{{/* Turn the JSON health/ready HTTP routes into Prometheus targets via blackbox-exporter (in the
+     monitoring namespace). Yields probe_success / probe_http_status_code / probe_duration_seconds
+     labeled by the target URL. /ready returns 503 when degraded, so http_ready treats only 200 as up.
+     The worker /ready is NOT probed here (it has no Service) — it's covered better by the per-pod
+     ypd_readiness_check gauge from the PodMonitor. The blackbox prober pod hits these on the same
+     ports the ServiceMonitors scrape, so the monitoring-ns NetworkPolicy openings already cover it. */}}
+{{- $svc := printf "%s.svc.cluster.local" .Release.Namespace }}
+{{- $prober := printf "blackbox-exporter.%s.svc.cluster.local:9115" .Values.monitoring.namespace }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: {{ include "ypd.componentName" (list . "health") }}
+  labels:
+    {{- include "ypd.labels" (list . "health") | nindent 4 }}
+spec:
+  prober:
+    url: {{ $prober | quote }}
+  module: http_2xx
+  interval: {{ .Values.monitoring.interval }}
+  scrapeTimeout: {{ .Values.monitoring.scrapeTimeout }}
+  targets:
+    staticConfig:
+      static:
+        - http://{{ include "ypd.componentName" (list . "backend-api") }}.{{ $svc }}:{{ .Values.backendApi.port }}/health
+        - http://{{ include "ypd.componentName" (list . "provider-ytdl") }}.{{ $svc }}:{{ .Values.providerYtdl.port }}/health
+        - http://{{ include "ypd.componentName" (list . "provider-youtubejs") }}.{{ $svc }}:{{ .Values.providerYoutubejs.port }}/health
+        - http://{{ include "ypd.componentName" (list . "frontend") }}.{{ $svc }}:{{ .Values.frontend.port }}/healthz
+---
+apiVersion: monitoring.coreos.com/v1
+kind: Probe
+metadata:
+  name: {{ include "ypd.componentName" (list . "ready") }}
+  labels:
+    {{- include "ypd.labels" (list . "ready") | nindent 4 }}
+spec:
+  prober:
+    url: {{ $prober | quote }}
+  module: http_ready
+  interval: {{ .Values.monitoring.interval }}
+  scrapeTimeout: {{ .Values.monitoring.scrapeTimeout }}
+  targets:
+    staticConfig:
+      static:
+        - http://{{ include "ypd.componentName" (list . "backend-api") }}.{{ $svc }}:{{ .Values.backendApi.port }}/ready
+        - http://{{ include "ypd.componentName" (list . "provider-ytdl") }}.{{ $svc }}:{{ .Values.providerYtdl.port }}/ready
+        - http://{{ include "ypd.componentName" (list . "provider-youtubejs") }}.{{ $svc }}:{{ .Values.providerYoutubejs.port }}/ready
+{{- end }}

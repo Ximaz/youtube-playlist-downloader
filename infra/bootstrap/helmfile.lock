@@ -12,5 +12,11 @@ dependencies:
   - name: keda
     repository: https://kedacore.github.io/charts
     version: 2.16.1
-digest: sha256:99b32c628c07a1fefd4ac6af537273df1bf69e9fb145ab74c60c86a8c2e8466d
-generated: "2026-06-14T15:57:48.294678+02:00"
+  - name: kube-prometheus-stack
+    repository: https://prometheus-community.github.io/helm-charts
+    version: 86.2.3
+  - name: prometheus-blackbox-exporter
+    repository: https://prometheus-community.github.io/helm-charts
+    version: 11.12.0
+digest: sha256:6324061ae585fe5e8169dfaa4c761fc76bc556fafc57286c39253cdeff690ae4
+generated: "2026-06-14T21:45:10.486576+02:00"

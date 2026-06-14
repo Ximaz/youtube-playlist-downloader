@@ -1,5 +1,5 @@
 import { Controller, Get, HttpCode, HttpStatus, ServiceUnavailableException } from '@nestjs/common';
-import { CacheService, ProviderRegistry, StorageService } from '@ypd/backend-core';
+import { CacheService, MetricsService, ProviderRegistry, StorageService } from '@ypd/backend-core';
 
 interface ReadinessReport {
   status: 'ready' | 'degraded';
@@ -13,6 +13,7 @@ export class HealthController {
     private readonly cache: CacheService,
     private readonly storage: StorageService,
     private readonly providers: ProviderRegistry,
+    private readonly metrics: MetricsService,
   ) {}
 
   /** Liveness probe: cheap, dependency-free. The container is running and the event loop is
@@ -49,6 +50,7 @@ export class HealthController {
       const check = providerChecks[i];
       if (provider && check) checks[`provider:${provider.name}`] = check;
     }
+    this.metrics.setReadiness('worker', checks);
 
     const infraOk = valkey.ok && s3.ok;
     const providersOk = providerChecks.length === 0 || providerChecks.some((c) => c.ok);

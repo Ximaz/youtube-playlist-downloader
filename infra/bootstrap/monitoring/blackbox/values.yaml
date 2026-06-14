@@ -1,0 +1,23 @@
+# prometheus-blackbox-exporter — probes the YPD /health, /ready, /healthz routes (driven by the
+# Probe CRs in the ypd chart). See infra/docs/architecture.md (Observability).
+fullnameOverride: blackbox-exporter # → Service blackbox-exporter:9115 (the Probe prober URL)
+
+config:
+  modules:
+    http_2xx:
+      prober: http
+      timeout: 5s
+      http:
+        valid_status_codes: [200]
+        preferred_ip_protocol: ip4
+    http_ready:
+      # /ready returns 503 when degraded, so only 200 counts as up.
+      prober: http
+      timeout: 5s
+      http:
+        valid_status_codes: [200]
+        preferred_ip_protocol: ip4
+
+resources:
+  requests: { cpu: 25m, memory: 32Mi }
+  limits: { memory: 64Mi }

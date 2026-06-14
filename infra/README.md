@@ -61,12 +61,23 @@ Terraform writes `infra/kubeconfig` + `infra/talosconfig` (gitignored, 0600 — 
 worker's 2nd disk is provisioned as a Talos user volume at `/var/mnt/data` and the node is labelled
 `ypd.io/data=true` (see `terraform/machine-config.tf`).
 
-## 2. Add-ons (Cilium reconcile + cert-manager + ingress-nginx + KEDA + local-path)
+## 2. Add-ons (Cilium + cert-manager + ingress-nginx + KEDA + monitoring + local-path)
 ```sh
-task cluster:addons        # helmfile sync (Helm 3) + the local-path provisioner
+# One-time: the Grafana admin login (vault-free, same SOPS+age key as the app secrets)
+cp secrets/monitoring.example.yaml secrets/monitoring.yaml
+$EDITOR secrets/monitoring.yaml                            # set a strong admin-password
+sops -e secrets/monitoring.yaml > secrets/monitoring.sops.yaml && rm secrets/monitoring.yaml
+
+export SOPS_AGE_KEY_FILE=~/.config/sops/age/keys.txt
+task cluster:addons        # creates ns monitoring + applies the Grafana secret, then helmfile sync + local-path
 ```
 Verify: `kubectl get svc -n ingress-nginx` shows `.202`; `kubectl get clusterissuer` shows `ypd-ca`
-Ready; `kubectl get sc` shows `local-path` (default).
+Ready; `kubectl get sc` shows `local-path` (default); `kubectl get pods -n monitoring` shows the
+operator, prometheus-0, grafana, kube-state-metrics, node-exporter, and blackbox Running.
+
+> **Must run before `task deploy`:** it installs the ServiceMonitor/PodMonitor/Probe CRDs the app
+> chart ships. New charts changed `helmfile.lock` — re-run `helmfile deps` in `bootstrap/` if you bump
+> a version.
 
 ## 3. Secrets (SOPS + age, vault-free)
 ```sh
@@ -96,3 +107,9 @@ Flip any dep to a managed service later with `-f helm/ypd/values-ovh.yaml` (no i
 - **TLS:** no public domain ⇒ no ACME. cert-manager issues from a **self-signed local CA** (`ypd-ca`).
   Trust `ypd-ca-tls`'s `ca.crt` on test devices to drop the browser warning. Google OAuth still works
   on the fake domain + self-signed cert (Google doesn't verify redirect-URI ownership).
+- **Monitoring:** Grafana is at **`https://grafana.pragmacode.fr`** (own cert from `ypd-ca`). Add the
+  Pi-hole record `address=/grafana.pragmacode.fr/192.168.0.202` (same LB IP — ingress-nginx routes by
+  Host). Log in with the SOPS `grafana-admin` password. Design + tuning: architecture.md §9.
+- **Dashboards as code:** the four YPD dashboards are grafonnet (`infra/grafana/`); edit a
+  `dashboards/*.jsonnet`, run `task grafana:build` (compiles to committed `helm/ypd/dashboards/*.json`),
+  then `task deploy`. The Grafana sidecar auto-imports them; node/cluster dashboards come with the stack.

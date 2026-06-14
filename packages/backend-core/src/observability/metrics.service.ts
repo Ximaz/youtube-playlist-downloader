@@ -75,6 +75,15 @@ export class MetricsService implements OnModuleInit {
     labelNames: ['queue'],
   });
 
+  // Per-dependency readiness (1 = ok, 0 = failing), published by each /ready handler. `component` is
+  // backend|worker; `check` is db|valkey|s3|provider:<name>. Surfaces exactly which dependency is
+  // down per pod, beyond the binary pod-level readiness kube-state-metrics already exposes.
+  readonly readinessCheck = new Gauge({
+    name: 'ypd_readiness_check',
+    help: 'Readiness of each downstream dependency from the /ready handler (1 = ok, 0 = failing).',
+    labelNames: ['component', 'check'],
+  });
+
   onModuleInit(): void {
     // Default Node + process metrics (event-loop lag, GC, memory, fd counts).
     collectDefaultMetrics({ register: this.registry });
@@ -87,8 +96,16 @@ export class MetricsService implements OnModuleInit {
       this.workerActive,
       this.workerConcurrency,
       this.workersConnected,
+      this.readinessCheck,
     ];
     for (const m of customs) this.registry.registerMetric(m);
+  }
+
+  /** Publish a /ready check map as gauges. Called by the health controllers on every probe. */
+  setReadiness(component: string, checks: Record<string, { ok: boolean }>): void {
+    for (const [check, { ok }] of Object.entries(checks)) {
+      this.readinessCheck.set({ component, check }, ok ? 1 : 0);
+    }
   }
 
   async render(): Promise<string> {

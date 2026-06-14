@@ -111,6 +111,16 @@ ingress:
 networkPolicy:
   enabled: false
 
+# ------------------------------------------------------------------ Monitoring (default off)
+# ServiceMonitors/PodMonitor/Probes + a Grafana dashboard for the kube-prometheus-stack add-on.
+# Needs the Prometheus Operator CRDs (installed by `task cluster:addons`, before `task deploy`).
+# When networkPolicy is also on, the policies open their scrape ports to monitoring.namespace.
+monitoring:
+  enabled: false
+  namespace: monitoring # where kube-prometheus-stack runs (netpol peer + blackbox prober host)
+  interval: 30s
+  scrapeTimeout: 10s
+
 # ------------------------------------------------------------------ Migrations / GC
 migrate:
   enabled: true # post-install/post-upgrade Job runs `prisma migrate deploy`

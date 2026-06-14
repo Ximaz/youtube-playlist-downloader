@@ -10,6 +10,8 @@ repositories:
     url: https://kubernetes.github.io/ingress-nginx
   - name: kedacore
     url: https://kedacore.github.io/charts
+  - name: prometheus-community
+    url: https://prometheus-community.github.io/helm-charts
 
 helmDefaults:
   wait: true
@@ -55,3 +57,28 @@ releases:
     namespace: keda
     chart: kedacore/keda
     version: {{ requiredEnv "KEDA_VERSION" | quote }}
+
+  - name: kube-prometheus-stack
+    namespace: monitoring
+    chart: prometheus-community/kube-prometheus-stack
+    version: {{ requiredEnv "KUBE_PROMETHEUS_STACK_VERSION" | quote }}
+    # Helm-3 + helmDefaults wait:true hangs on operator webhooks (same class as cert-manager). The
+    # admission webhook is disabled in values; keep wait off and gate readiness via the postsync hook.
+    wait: false
+    waitForJobs: false
+    values:
+      - monitoring/kube-prometheus-stack/values.yaml
+    hooks:
+      # CRDs + operator must be reconciled before `task deploy` ships the app ServiceMonitors/Probes.
+      - events: ["postsync"]
+        showlogs: true
+        command: kubectl
+        args:
+          ["-n", "monitoring", "rollout", "status", "deploy/kube-prometheus-stack-operator", "--timeout=300s"]
+
+  - name: blackbox-exporter
+    namespace: monitoring
+    chart: prometheus-community/prometheus-blackbox-exporter
+    version: {{ requiredEnv "PROMETHEUS_BLACKBOX_EXPORTER_VERSION" | quote }}
+    values:
+      - monitoring/blackbox/values.yaml

@@ -71,6 +71,8 @@ Installed by `bootstrap/helmfile.yaml.gotmpl` (`task cluster:addons`), pinned in
   WebSocket upgrades and long read/send timeouts (3600s) for live progress + archive streaming.
 - **KEDA** — event-driven autoscaler for the worker tier (see §5).
 - **local-path-provisioner** — see §2.
+- **kube-prometheus-stack** + **blackbox-exporter** (namespace `monitoring`) — Prometheus, Grafana,
+  node-exporter, kube-state-metrics, and HTTP-route probing. The whole observability story is §9.
 
 ---
 
@@ -219,3 +221,65 @@ redeploy. Anonymous downloads work without it.
 - **DNS for the fake domain** — only the local resolver (Pi-hole/dnsmasq) knows `*.pragmacode.fr`; if a
   client also queries a router/public resolver it will `NXDOMAIN` the name and race the local answer.
   Make the local resolver the **only** DNS server (via DHCP).
+
+---
+
+## 9. Observability & monitoring
+
+`task cluster:addons` installs **kube-prometheus-stack** (Prometheus Operator + Prometheus + Grafana +
+node-exporter + kube-state-metrics) and **blackbox-exporter** in the `monitoring` namespace; the app
+chart ships the glue that wires YPD in (gated on `monitoring.enabled`, on in `values-proxmox`).
+
+**What it shows.** Grafana at **`https://grafana.pragmacode.fr`** (its own cert from `ypd-ca` — trust
+the same CA as the app). Bundled cluster/node/pod dashboards cover **CPU/memory/disk/network**; four
+chart-shipped YPD dashboards cover the app — **Overview** (backlog, fleet, readiness, golden signals),
+**Queue & Workers** (queue depth by state, backlog, utilization, capacity), **Providers & Storage**
+(provider latency/throughput/fallbacks, contract violations, S3 op latency), and **Health & Readiness**
+(the per-dependency readiness matrix, blackbox route up/down + status, pod readiness + restarts).
+
+**Dashboards as code (grafonnet).** The YPD dashboards are authored in **Jsonnet with the community
+grafonnet library** under `infra/grafana/` (`lib/ypd.libsonnet` holds shared panel/query helpers;
+`dashboards/*.jsonnet` is one file per dashboard). `task grafana:build` compiles them to
+`infra/helm/ypd/dashboards/*.json` (committed), and the chart bundles **every** `dashboards/*.json` as
+its own `grafana_dashboard`-labelled ConfigMap via `.Files.Glob` — so adding a dashboard is "add a
+`.jsonnet` + rebuild", no template change. grafonnet is pinned by `infra/grafana/jsonnetfile.lock.json`
+(SHA-summed); `vendor/` is restored by `jb install` (run automatically by `grafana:build`) and not
+committed.
+
+**Scraping.** The app exposes `/metrics` on backend-api (:3000), the worker (:3000), and both providers
+(:5000/:5001) — the frontend has none. The chart adds **ServiceMonitors** (backend-api + the two
+providers) and a **PodMonitor** for the worker (it has no Service, and per-pod scraping matches the
+per-instance worker capacity gauges). The operator selects monitors/probes across all namespaces
+(`*SelectorNilUsesHelmValues: false`), so no `release` label is needed.
+
+**Health routes → metrics.** `/health`,`/ready`,`/healthz` return JSON, not metrics, so two **Probe**
+CRs point blackbox at them (`probe_success` / `probe_http_status_code`); only HTTP 200 counts as up, so
+a degraded `/ready` (503) flips the panel. The worker `/ready` is **not** blackbox-probed (no Service)
+— it is covered better by the per-pod `ypd_readiness_check` gauge.
+
+**Per-dependency readiness gauge.** Each `/ready` handler publishes `ypd_readiness_check{component,
+check}` (1/0) via `MetricsService.setReadiness` (backend-core), so Grafana pinpoints exactly which
+dependency (db/valkey/s3/provider:*) is down on which pod — beyond the binary pod readiness from
+kube-state-metrics. The kubelet hits `/ready` every 10s, refreshing it for free.
+
+**NetworkPolicy.** With `networkPolicy.enabled`, each component opens its scrape port to the
+`monitoring` namespace **only** — backend-api :3000, the worker :3000 (a new ingress rule; its policy
+was egress-only), the providers :5000/:5001, and the frontend :8080 (for `/healthz`). node-exporter,
+kubelet, and cAdvisor are node-local and exempt.
+
+**Footprint & retention.** Prometheus is pinned to the data node (`ypd.io/data=true`) on a 10Gi
+local-path PVC, **7d retention capped at 8GB** so it can't fill `/var/mnt/data` next to the app's
+stateful PVCs; Grafana gets a 2Gi PVC there too. Alertmanager is **off** (no alerting yet). The Talos
+control-plane ServiceMonitors (etcd/scheduler/controller-manager/kube-proxy) are disabled to avoid
+permanently-down targets — Cilium replaces kube-proxy.
+
+**Grafana auth (vault-free).** The admin login is a SOPS+age secret (`secrets/monitoring.sops.yaml`,
+gitignored; template `monitoring.example.yaml`) applied to the `monitoring` namespace by
+`task cluster:addons` **before** the stack syncs; Grafana reads it via `grafana.admin.existingSecret`.
+
+> **Helm-3 hang avoidance.** kube-prometheus-stack installs the operator's admission webhook + CRDs.
+> Under `helmDefaults wait:true` that hangs like cert-manager/ingress-nginx did, so the release sets
+> `wait:false`, **disables the admission webhook** (and its certgen jobs), and gates readiness with a
+> `kubectl rollout status deploy/kube-prometheus-stack-operator` postsync hook. That also guarantees
+> the ServiceMonitor/PodMonitor/Probe CRDs exist before `task deploy` ships the app's monitors — so
+> **addons must run before deploy** (the runbook already orders them that way).

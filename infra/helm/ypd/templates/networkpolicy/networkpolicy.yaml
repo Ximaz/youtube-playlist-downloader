@@ -2,7 +2,9 @@
 {{/* Per-component NetworkPolicies (Cilium-enforced). See infra/docs/architecture.md §5.
      allow-dns selects ALL pods for egress, so every pod is egress-default-deny — each policy below
      re-grants exactly what that component needs. Kubelet probes are local-host→pod and allowed by
-     Cilium regardless of policy. Ingress is restricted only on the components something connects TO. */}}
+     Cilium regardless of policy. Ingress is restricted only on the components something connects TO.
+     When monitoring.enabled, the scrape/blackbox ports additionally admit the monitoring namespace
+     (Prometheus + blackbox-exporter) — see the monitoring.enabled blocks below. */}}
 {{- $ns := .Release.Namespace }}
 ---
 # allow-dns: every ypd pod may resolve kube-dns. Selecting all pods makes egress default-deny.
@@ -43,6 +45,14 @@ spec:
               kubernetes.io/metadata.name: ingress-nginx
       ports:
         - { protocol: TCP, port: {{ .Values.frontend.port }} }
+    {{- if .Values.monitoring.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.monitoring.namespace }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.frontend.port }} } # /healthz blackbox
+    {{- end }}
   egress:
     - to:
         - podSelector:
@@ -74,6 +84,14 @@ spec:
               kubernetes.io/metadata.name: keda
       ports:
         - { protocol: TCP, port: {{ .Values.backendApi.port }} }
+    {{- if .Values.monitoring.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.monitoring.namespace }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.backendApi.port }} } # /metrics scrape + /health,/ready blackbox
+    {{- end }}
   egress:
     - to:
         - podSelector: { matchLabels: { app.kubernetes.io/name: valkey } }
@@ -109,7 +127,16 @@ spec:
   podSelector:
     matchLabels:
       {{- include "ypd.selectorLabels" (list . "backend-worker") | nindent 6 }}
-  policyTypes: ["Egress"]
+  policyTypes: ["Egress"{{ if .Values.monitoring.enabled }}, "Ingress"{{ end }}]
+  {{- if .Values.monitoring.enabled }}
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.monitoring.namespace }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.worker.port }} } # /metrics scrape + /health,/ready blackbox
+  {{- end }}
   egress:
     - to:
         - podSelector: { matchLabels: { app.kubernetes.io/name: valkey } }
@@ -144,6 +171,15 @@ spec:
         - podSelector:
             matchExpressions:
               - { key: app.kubernetes.io/name, operator: In, values: ["backend-api", "backend-worker"] }
+    {{- if .Values.monitoring.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.monitoring.namespace }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.providerYtdl.port }} }
+        - { protocol: TCP, port: {{ .Values.providerYoutubejs.port }} }
+    {{- end }}
   egress:
     - to: [{ ipBlock: { cidr: 0.0.0.0/0 } }] # YouTube / googlevideo (IPs not pinnable)
       ports:

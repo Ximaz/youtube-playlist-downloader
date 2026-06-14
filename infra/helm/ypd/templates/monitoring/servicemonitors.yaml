@@ -1,0 +1,25 @@
+{{- if .Values.monitoring.enabled }}
+{{/* ServiceMonitors for the components that own a Service + /metrics. The worker has no Service —
+     it gets a PodMonitor (podmonitor-worker.yaml). The operator selects these across namespaces
+     (serviceMonitorSelectorNilUsesHelmValues=false in the add-on), so no `release:` label is needed. */}}
+{{- range $c := list "backend-api" "provider-ytdl" "provider-youtubejs" }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "ypd.componentName" (list $ $c) }}
+  labels:
+    {{- include "ypd.labels" (list $ $c) | nindent 4 }}
+spec:
+  namespaceSelector:
+    matchNames: [{{ $.Release.Namespace }}]
+  selector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list $ $c) | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ $.Values.monitoring.interval }}
+      scrapeTimeout: {{ $.Values.monitoring.scrapeTimeout }}
+{{- end }}
+{{- end }}

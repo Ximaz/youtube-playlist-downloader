@@ -27,3 +27,6 @@ ingress:
 
 networkPolicy:
   enabled: true # validated against the running app — see infra/docs/architecture.md §5
+
+monitoring:
+  enabled: true # ServiceMonitors/PodMonitor/Probes + Grafana dashboard (kube-prometheus-stack add-on)
