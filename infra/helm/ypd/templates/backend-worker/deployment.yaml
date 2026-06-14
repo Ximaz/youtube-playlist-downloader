@@ -1,0 +1,66 @@
+{{- $component := "backend-worker" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ypd.componentName" (list . $component) }}
+  labels:
+    {{- include "ypd.labels" (list . $component) | nindent 4 }}
+spec:
+  # No replicas field: the KEDA ScaledObject (via its managed HPA) owns the replica count. Setting it
+  # here would fight the autoscaler on every reconcile.
+  selector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list . $component) | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/config/backend.configmap.yaml") $ | sha256sum }}
+      labels:
+        {{- include "ypd.labels" (list . $component) | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "ypd.serviceAccountName" (list . "worker") }}
+      automountServiceAccountToken: false
+      # Long grace so BullMQ drains in-flight download/convert jobs before SIGKILL (90s lockDuration
+      # re-runs anything still stalled).
+      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- include "ypd.podSecurityContext" (list . 1000) | nindent 8 }}
+      containers:
+        - name: backend-worker
+          image: {{ include "ypd.image" (list . .Values.images.worker) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.worker.port }}
+          envFrom:
+            # Shares the non-secret backend ConfigMap; the worker Secret omits DATABASE_URL + GOOGLE_*.
+            - configMapRef:
+                name: {{ include "ypd.componentName" (list . "backend") }}
+            - secretRef:
+                name: {{ include "ypd.workerSecretName" . }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          securityContext:
+            {{- include "ypd.containerSecurityContext" (list . .Values.worker.readOnlyRootFilesystem) | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

@@ -1,0 +1,30 @@
+# Proxmox/Talos overlay — in-cluster everything, local domain, self-signed CA, OAuth off first.
+# Real credentials are NOT here: they live in infra/secrets/secrets.sops.yaml (age-encrypted) and are
+# applied out-of-band as the Secrets referenced by secrets.existingSecret(Worker) + the dep secrets.
+
+global:
+  imageTag: latest
+
+secrets:
+  existingSecret: ypd-backend-secrets
+  existingSecretWorker: ypd-worker-secrets
+
+valkey:
+  inCluster: true
+postgres:
+  inCluster: true
+seaweedfs:
+  inCluster: true
+
+google:
+  enabled: true # GOOGLE_CLIENT_ID/SECRET live in ypd-backend-secrets (SOPS); redirect URI derived from ingress.host
+
+ingress:
+  enabled: true
+  host: ypd.pragmacode.fr
+  tls:
+    enabled: true
+    issuer: ypd-ca
+
+networkPolicy:
+  enabled: false

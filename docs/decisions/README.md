@@ -239,3 +239,32 @@ API-owned (the worker entrypoint runs none). CI builds both images; the lint/typ
 image/Dockerfile to maintain, and `provider-client` needs an explicit `Readable.fromWeb(... as ...)` cast
 because backend-core's `@aws-sdk`-importing typecheck pulls the DOM `ReadableStream` into scope.
 **Supersedes ADR 0015.**
+
+## 0019 — Kubernetes on Talos: Terraform + Cilium + Helmfile, vault-free secrets
+The cloud-agnostic deployment (Workstream F) is a 4-node **Talos Linux** cluster on Proxmox,
+provisioned by **Terraform** (`siderolabs/talos` + `bpg/proxmox`) — immutable, API-only, no SSH. CNI,
+kube-proxy replacement, and the bare-metal LoadBalancer are all **Cilium** (LB-IPAM + L2 announcement,
+so a `Service type=LoadBalancer` gets a LAN IP with no MetalLB). Day-2 delivery is **imperative**
+(Helmfile + Taskfile), not GitOps: add-ons (`cert-manager`, `ingress-nginx`, KEDA, local-path) via a
+helmfile; the app via one **cloud-agnostic Helm chart** (`infra/helm/ypd`) where every stateful dep
+(Valkey/Postgres/S3) is pluggable in-cluster ↔ managed with values only. Worker autoscaling is **KEDA**
+on the API's `GET /scaling/backlog` (metrics-api scaler — no Prometheus); stock CPU HPAs elsewhere.
+
+**Secrets are vault-free, mirroring ADR-0008's "encrypt the substrate, don't add a key-management
+surface."** Two layers: (1) at rest — Talos **LUKS2** encrypts etcd's partitions (ADR-0008's LUKS),
+so a Secret is ciphertext on disk; (2) provisioning — real credentials live ONLY in an **age-encrypted
+SOPS file** (`infra/secrets/secrets.sops.yaml`, only `stringData` encrypted) applied out-of-band; the
+chart **references Secrets by name (`existingSecret`) and never templates a credential value**, so
+`helm get manifest`/git never expose one. Per-image Secret split (the worker Secret omits
+`DATABASE_URL` + `GOOGLE_*`); every workload runs under a dedicated ServiceAccount with
+`automountServiceAccountToken: false` and no Secret RBAC. `GET /scaling/backlog` stays **unauthenticated**
+(it's `@ApiExcludeController`, leaks 3 integers, is ClusterIP-internal) — fenced by a NetworkPolicy
+rather than a KEDA `TriggerAuthentication` token, which would re-introduce the key surface ADR-0008
+avoids. **Trade-offs:** (a) the cross-equality invariant (in-cluster dep creds must equal the creds
+embedded in `CACHE_URL`/`DATABASE_URL`/`S3_*`) is unenforced by code — the SOPS example documents it and
+a future Taskfile `validate` should assert it; (b) the SOPS age private key is operator-held and rotation
+is a re-encrypt + redeploy; (c) Talos machine secrets currently live in `terraform.tfstate` (gitignored)
+— move to an encrypted remote backend before sharing/HA; (d) single-replica StatefulSets on a node-local
+disk give persistence without HA (Longhorn is the documented HA upgrade). **Tooling note:** the toolchain
+pins **Helm 3** — Helm 4's reworked plugin format + `--wait` hang helmfile and the webhook charts and
+break `helm secrets`.

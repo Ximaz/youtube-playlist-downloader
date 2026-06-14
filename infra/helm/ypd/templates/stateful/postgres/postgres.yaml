@@ -1,0 +1,88 @@
+{{- if .Values.postgres.inCluster }}
+{{- $component := "postgres" }}
+# In-cluster Postgres (OAuth tokens + sessions — MUST persist). We keep the stock entrypoint (runs as
+# root, chowns PGDATA, drops to the postgres user via gosu), so no runAsUser is pinned and caps are
+# left at the container default that gosu needs — hardening to a non-root uid is a Step F follow-up.
+# PGDATA is a SUBDIRECTORY of the mount so Postgres creates it with the 0700 perms it requires,
+# sidestepping the volume-root permission check.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ypd.postgresName" . }}
+  labels:
+    {{- include "ypd.labels" (list . $component) | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "ypd.selectorLabels" (list . $component) | nindent 4 }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "ypd.postgresName" . }}
+  labels:
+    {{- include "ypd.labels" (list . $component) | nindent 4 }}
+spec:
+  serviceName: {{ include "ypd.postgresName" . }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list . $component) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ypd.labels" (list . $component) | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        {{- toYaml .Values.persistence.nodeSelector | nindent 8 }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          envFrom:
+            - secretRef:
+                name: {{ .Values.postgres.existingSecret }}
+          livenessProbe:
+            tcpSocket:
+              port: postgres
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h 127.0.0.1'
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.persistence.storageClassName }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.storage }}
+{{- end }}

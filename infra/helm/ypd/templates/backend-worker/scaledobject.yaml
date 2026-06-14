@@ -1,0 +1,26 @@
+{{- $component := "backend-worker" }}
+{{/* KEDA scales the worker on real queue backlog (no Prometheus): the metrics-api trigger polls the
+     API's GET /scaling/backlog → {download,convert,total} and targets `total`. Replicas ≈
+     ceil(total / targetValue), targetValue = DOWNLOAD_CONCURRENCY (one replica per backlog batch).
+     KEDA owns the worker's HPA — do NOT also template a HorizontalPodAutoscaler for it. */}}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "ypd.componentName" (list . $component) }}
+  labels:
+    {{- include "ypd.labels" (list . $component) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: {{ include "ypd.componentName" (list . $component) }}
+  minReplicaCount: {{ .Values.worker.scaledObject.minReplicas }}
+  maxReplicaCount: {{ .Values.worker.scaledObject.maxReplicas }}
+  cooldownPeriod: {{ .Values.worker.scaledObject.cooldownPeriod }}
+  pollingInterval: {{ .Values.worker.scaledObject.pollingInterval }}
+  triggers:
+    - type: metrics-api
+      metadata:
+        # FQDN, not the short name: KEDA runs in the `keda` namespace and must resolve the API
+        # Service cross-namespace.
+        url: "http://{{ include "ypd.componentName" (list . "backend-api") }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.backendApi.port }}/scaling/backlog"
+        valueLocation: "total"
+        targetValue: {{ .Values.config.worker.downloadConcurrency | quote }}

@@ -1,0 +1,114 @@
+{{- if .Values.networkPolicy.enabled }}
+{{/* Per-component NetworkPolicies (Cilium enforces them). Default off — enable + validate once the
+     app is up (Step F). Each egress policy re-allows DNS (kube-dns) since selecting a pod for egress
+     otherwise blocks name resolution. The data stores accept ingress only from the components that
+     legitimately use them; providers may egress to the internet (YouTube IPs aren't pinnable) but
+     accept ingress only from the backend tiers. /scaling/backlog stays unauthenticated — it is
+     fenced here (api ingress :3000 only from frontend + the KEDA namespace). */}}
+{{- $apiSel := dict "app.kubernetes.io/name" "backend-api" }}
+{{- $workerSel := dict "app.kubernetes.io/name" "backend-worker" }}
+---
+# Shared: allow DNS egress for every ypd pod.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ypd.componentName" (list . "allow-dns") }}
+  labels:
+    {{- include "ypd.labels" (list . "netpol") | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# frontend: ingress only from the ingress-nginx namespace; egress to backend-api.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ypd.componentName" (list . "frontend") }}
+  labels:
+    {{- include "ypd.labels" (list . "frontend") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list . "frontend") | nindent 6 }}
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - { protocol: TCP, port: {{ .Values.frontend.port }} }
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "ypd.selectorLabels" (list . "backend-api") | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.backendApi.port }} }
+---
+# backend-api: ingress :3000 from frontend + the KEDA namespace (the metrics-api scaler).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ypd.componentName" (list . "backend-api") }}
+  labels:
+    {{- include "ypd.labels" (list . "backend-api") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list . "backend-api") | nindent 6 }}
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ypd.selectorLabels" (list . "frontend") | nindent 14 }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: keda
+      ports:
+        - { protocol: TCP, port: {{ .Values.backendApi.port }} }
+---
+# providers: ingress from the backend tiers; egress to the internet (:80/:443) + the PO-token sidecar.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ypd.componentName" (list . "providers") }}
+  labels:
+    {{- include "ypd.labels" (list . "providers") | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: ["provider-ytdl", "provider-youtubejs"]
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: ["backend-api", "backend-worker"]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - { protocol: TCP, port: 443 }
+        - { protocol: TCP, port: 80 }
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "ypd.selectorLabels" (list . "provider-pot") | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: {{ .Values.providerPot.port }} }
+{{- end }}

@@ -1,0 +1,223 @@
+# YPD chart defaults (cloud-agnostic). Per-env overlays (values-proxmox.yaml / values-ovh.yaml)
+# only flip the deltas: which deps run in-cluster, the ingress host, the TLS issuer, OAuth.
+#
+# Secret model (see PART A / Design ref §1): the chart NEVER templates real credential values. In
+# prod it references pre-created Secrets via `secrets.existingSecret(Worker)`; `secrets.create` is a
+# DEV-ONLY escape hatch that renders a Secret from `secrets.values`. Real creds live only in
+# infra/secrets/secrets.sops.yaml (age-encrypted) and are applied out-of-band before deploy.
+
+global:
+  registry: ghcr.io/ximaz
+  imageTag: latest
+  imagePullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+# ------------------------------------------------------------------ Images (under global.registry)
+images:
+  backend: ypd-backend
+  worker: ypd-worker
+  frontend: ypd-frontend
+  providerYtdl: ypd-provider-ytdl
+  providerYoutubejs: ypd-provider-youtubejs
+  # provider-pot is an upstream image (full ref, not under global.registry).
+  providerPotRepository: docker.io/brainicism/bgutil-ytdlp-pot-provider
+  providerPotTag: "1.3.1"
+
+# ------------------------------------------------------------------ Secrets (vault-free)
+secrets:
+  existingSecret: "" # prod: name of the pre-created backend Secret (recommended)
+  existingSecretWorker: "" # defaults to existingSecret when empty
+  create: false # DEV ONLY: render Secrets from the values below (never commit real creds)
+  values: {} # backend: { CACHE_URL, DATABASE_URL, S3_ACCESS_KEY, S3_SECRET_KEY, ... }
+  workerValues: {} # worker subset: { CACHE_URL, QUEUE_CACHE_URL, EPHEMERAL_CACHE_URL, S3_ACCESS_KEY, S3_SECRET_KEY }
+
+# ------------------------------------------------------------------ Stateful deps (pluggable)
+# Names of the pre-created credential Secrets for the in-cluster deps (applied out-of-band via SOPS).
+valkey:
+  inCluster: true
+  split: false # false: one instance (all 3 URLs equal); true: -valkey-queue + -valkey-ephemeral
+  image: valkey/valkey:8.1
+  existingSecret: ypd-valkey # keys: VALKEY_USERNAME, VALKEY_PASSWORD
+  storage: 5Gi
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 512Mi }
+
+postgres:
+  inCluster: true
+  image: postgres:17-alpine
+  existingSecret: ypd-postgres # keys: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+  storage: 5Gi
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 512Mi }
+
+seaweedfs:
+  inCluster: true
+  image: chrislusf/seaweedfs:4.29
+  existingSecret: ypd-seaweedfs # keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (== S3_ACCESS/SECRET)
+  storage: 20Gi
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 1Gi }
+
+# StorageClass + node pinning for the in-cluster StatefulSets (the Talos user volume worker).
+persistence:
+  storageClassName: local-path
+  nodeSelector:
+    ypd.io/data: "true"
+
+# ------------------------------------------------------------------ Non-secret config (ConfigMap)
+config:
+  s3:
+    # endpoint resolves to the in-cluster SeaweedFS Service when seaweedfs.inCluster=true (helper).
+    endpoint: "" # external S3 endpoint when seaweedfs.inCluster=false
+    region: us-east-1
+    bucket: ypd
+    forcePathStyle: "true"
+    connectionTimeoutMs: "3000"
+    requestTimeoutMs: "30000"
+    maxAttempts: "3"
+  providers:
+    order: "ytdl,youtubejs"
+    timeoutMs: "15000"
+    globalConcurrency: "16"
+    breakerThreshold: "5"
+    breakerCooldownMs: "30000"
+    # provider-side tuning (ytdl + youtubejs containers)
+    logLevel: "info"
+    streamSegmentSize: "1048576"
+    streamSegmentConcurrency: "4"
+    potTimeoutMs: "20000"
+  cache:
+    metadataTtl: "86400"
+    commandTimeoutMs: "5000"
+  worker:
+    downloadConcurrency: "6"
+    convertConcurrency: "3"
+
+# ------------------------------------------------------------------ Google OAuth (real creds = Secret)
+google:
+  enabled: false # off for the first deploy; anonymous downloads need no OAuth
+  # redirectUri defaults to https://<ingress.host>/api/auth/google/callback (must be registered).
+  redirectUri: ""
+
+# ------------------------------------------------------------------ Ingress + TLS
+ingress:
+  enabled: true
+  className: nginx
+  host: "" # REQUIRED when enabled (e.g. ypd.pragmacode.fr)
+  tls:
+    enabled: true
+    issuer: ypd-ca # cert-manager ClusterIssuer
+  annotations: {}
+
+# ------------------------------------------------------------------ NetworkPolicies (default off)
+networkPolicy:
+  enabled: false
+
+# ------------------------------------------------------------------ Migrations / GC
+migrate:
+  enabled: true # pre-install/pre-upgrade Job runs `prisma migrate deploy`
+prune:
+  enabled: true
+  schedule: "30 3 * * *" # daily 03:30
+  olderThanDays: "30"
+
+# ------------------------------------------------------------------ Components
+backendApi:
+  replicas: 2
+  port: 3000
+  terminationGracePeriodSeconds: 40
+  readOnlyRootFilesystem: true # API writes only to /tmp (emptyDir); flip false if a write fails
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 512Mi }
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 75
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+worker:
+  port: 3000 # minimal health server
+  terminationGracePeriodSeconds: 40
+  resources:
+    requests: { cpu: 500m, memory: 512Mi }
+    limits: { memory: 1Gi }
+  # KEDA ScaledObject (queue backlog on /scaling/backlog). KEDA owns the worker HPA.
+  scaledObject:
+    minReplicas: 1
+    maxReplicas: 10
+    cooldownPeriod: 120
+    pollingInterval: 15
+    # targetValue defaults to config.worker.downloadConcurrency (one replica per backlog batch).
+  pdb:
+    enabled: true
+    maxUnavailable: 1
+  # ffmpeg/yt-dlp write temp files → ship writable root first, tighten with emptyDir /tmp later.
+  readOnlyRootFilesystem: false
+
+frontend:
+  replicas: 2
+  port: 8080
+  cookieSecure: "true"
+  terminationGracePeriodSeconds: 15
+  readOnlyRootFilesystem: true # Nitro serves from a read-only .output; only /tmp is writable
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 256Mi }
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 75
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+providerYtdl:
+  replicas: 2
+  port: 5000
+  runAsUser: 10001
+  readOnlyRootFilesystem: false # yt-dlp/ffprobe temp files
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 512Mi }
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 75
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+providerYoutubejs:
+  replicas: 2
+  port: 5001
+  runAsUser: 100 # image-assigned alpine system user (discovered)
+  readOnlyRootFilesystem: false
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 512Mi }
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 75
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+providerPot:
+  replicas: 1
+  port: 4416
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 256Mi }

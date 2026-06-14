@@ -1,0 +1,16 @@
+version: v1.5.3
+dependencies:
+  - name: cert-manager
+    repository: https://charts.jetstack.io
+    version: v1.16.2
+  - name: cilium
+    repository: https://helm.cilium.io
+    version: 1.17.4
+  - name: ingress-nginx
+    repository: https://kubernetes.github.io/ingress-nginx
+    version: 4.12.0
+  - name: keda
+    repository: https://kedacore.github.io/charts
+    version: 2.16.1
+digest: sha256:99b32c628c07a1fefd4ac6af537273df1bf69e9fb145ab74c60c86a8c2e8466d
+generated: "2026-06-14T15:57:48.294678+02:00"

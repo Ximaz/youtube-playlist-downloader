@@ -1,0 +1,58 @@
+{{- if .Values.migrate.enabled }}
+{{/* Prisma migrations run in ONE place: this Job, never a serving pod (ConfigMap sets
+     MIGRATE_ON_START=false). It is a post-install/post-upgrade hook because the in-cluster Postgres
+     StatefulSet is part of THIS release — a pre-install hook would run before Postgres exists. With
+     helm --wait, the hook fires only after the release's resources (incl. Postgres) are Ready; the
+     wait-postgres initContainer is belt-and-suspenders for the in-cluster case. */}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "ypd.componentName" (list . "migrate") }}
+  labels:
+    {{- include "ypd.labels" (list . "migrate") | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 6
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        {{- include "ypd.selectorLabels" (list . "migrate") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "ypd.serviceAccountName" (list . "backend") }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "ypd.podSecurityContext" (list . 1000) | nindent 8 }}
+      {{- if .Values.postgres.inCluster }}
+      initContainers:
+        - name: wait-postgres
+          image: {{ include "ypd.image" (list . .Values.images.backend) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command:
+            - sh
+            - -c
+            - 'until nc -z {{ include "ypd.postgresName" . }} 5432; do echo "waiting for postgres…"; sleep 2; done'
+          securityContext:
+            {{- include "ypd.containerSecurityContext" (list . true) | nindent 12 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: {{ include "ypd.image" (list . .Values.images.backend) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["./node_modules/.bin/prisma", "migrate", "deploy"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "ypd.componentName" (list . "backend") }}
+            - secretRef:
+                name: {{ include "ypd.backendSecretName" . }}
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            # RO false: the Prisma engine may write to its working dir/tmp during migrate.
+            {{- include "ypd.containerSecurityContext" (list . false) | nindent 12 }}
+{{- end }}

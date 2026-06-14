@@ -34,6 +34,38 @@ locals {
       proxy   = { disabled = true }         # Cilium kube-proxy replacement
     }
   })
+
+  # Applied ONLY to the stateful worker (data == true). Two extra config documents:
+  #  1. machine.nodeLabels — so the chart's local-path provisioner + StatefulSets pin here by LABEL
+  #     (robust against the random auto-stable hostname).
+  #  2. UserVolumeConfig — provision + mount the second virtio disk (sdb, the only non-system disk)
+  #     as a Talos user volume at /var/mnt/data. Talos creates the partition + xfs and mounts it; the
+  #     volume survives reboots and OS upgrades (unlike EPHEMERAL on a reset). minSize floor only →
+  #     the partition grows to fill the disk. Added as a SEPARATE document (kind != Config) so the
+  #     configpatcher appends it rather than merging into v1alpha1.Config.
+  data_node_patches = [
+    yamlencode({
+      machine = {
+        nodeLabels = {
+          "ypd.io/data" = "true"
+        }
+      }
+    }),
+    yamlencode({
+      apiVersion = "v1alpha1"
+      kind       = "UserVolumeConfig"
+      name       = "data"
+      provisioning = {
+        diskSelector = {
+          match = "disk.transport == 'virtio' && !system_disk"
+        }
+        minSize = "10GiB"
+      }
+      filesystem = {
+        type = "xfs"
+      }
+    }),
+  ]
 }
 
 # Per-node machine config: common patch + hostname + static IP (+ the API VIP on control-planes).
@@ -48,27 +80,31 @@ data "talos_machine_configuration" "node" {
   talos_version      = var.talos_version
   kubernetes_version = var.kubernetes_version != "" ? var.kubernetes_version : null
 
-  config_patches = [
-    local.common_patch,
-    # NOTE: hostname is intentionally NOT set under machine.network — Talos 1.12 emits a separate
-    # `HostnameConfig` document (auto: stable), and setting it in both places is rejected
-    # ("static hostname is already set in v1alpha1 config"). Per-node static IP + the control-plane
-    # VIP go here; the interface is matched by driver (the NIC is ens18 on Proxmox).
-    yamlencode({
-      machine = {
-        network = {
-          interfaces = [
-            merge(
-              {
-                deviceSelector = { driver = "virtio_net" }
-                addresses      = ["${each.value.ip}/${var.subnet_prefix}"]
-                routes         = [{ network = "0.0.0.0/0", gateway = var.gateway }]
-              },
-              each.value.type == "controlplane" ? { vip = { ip = var.cluster_vip } } : {},
-            )
-          ]
+  config_patches = concat(
+    [
+      local.common_patch,
+      # NOTE: hostname is intentionally NOT set under machine.network — Talos 1.12 emits a separate
+      # `HostnameConfig` document (auto: stable), and setting it in both places is rejected
+      # ("static hostname is already set in v1alpha1 config"). Per-node static IP + the control-plane
+      # VIP go here; the interface is matched by driver (the NIC is ens18 on Proxmox).
+      yamlencode({
+        machine = {
+          network = {
+            interfaces = [
+              merge(
+                {
+                  deviceSelector = { driver = "virtio_net" }
+                  addresses      = ["${each.value.ip}/${var.subnet_prefix}"]
+                  routes         = [{ network = "0.0.0.0/0", gateway = var.gateway }]
+                },
+                each.value.type == "controlplane" ? { vip = { ip = var.cluster_vip } } : {},
+              )
+            ]
+          }
         }
-      }
-    }),
-  ]
+      }),
+    ],
+    # The stateful worker also gets the data-disk user volume + the ypd.io/data label.
+    each.value.data ? local.data_node_patches : [],
+  )
 }

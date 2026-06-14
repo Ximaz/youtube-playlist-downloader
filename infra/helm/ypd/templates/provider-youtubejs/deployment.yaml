@@ -1,0 +1,75 @@
+{{- $component := "provider-youtubejs" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ypd.componentName" (list . $component) }}
+  labels:
+    {{- include "ypd.labels" (list . $component) | nindent 4 }}
+spec:
+  {{- if not .Values.providerYoutubejs.autoscaling.enabled }}
+  replicas: {{ .Values.providerYoutubejs.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list . $component) | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/config/providers.configmap.yaml") $ | sha256sum }}
+      labels:
+        {{- include "ypd.labels" (list . $component) | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "ypd.serviceAccountName" (list . "provider") }}
+      automountServiceAccountToken: false
+      # Spread replicas across nodes → distinct egress IPs (ADR-0017).
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "ypd.selectorLabels" (list . $component) | nindent 20 }}
+      securityContext:
+        {{- include "ypd.podSecurityContext" (list . .Values.providerYoutubejs.runAsUser) | nindent 8 }}
+      containers:
+        - name: provider-youtubejs
+          image: {{ include "ypd.image" (list . .Values.images.providerYoutubejs) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.providerYoutubejs.port }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "ypd.componentName" (list . "providers") }}
+          env:
+            - name: PORT
+              value: {{ .Values.providerYoutubejs.port | quote }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            # youtubejs bootstraps Innertube on start — give it longer before the first liveness check.
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.providerYoutubejs.resources | nindent 12 }}
+          securityContext:
+            {{- include "ypd.containerSecurityContext" (list . .Values.providerYoutubejs.readOnlyRootFilesystem) | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

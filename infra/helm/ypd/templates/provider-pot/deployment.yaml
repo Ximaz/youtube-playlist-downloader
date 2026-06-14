@@ -1,0 +1,49 @@
+{{- $component := "provider-pot" }}
+{{/* PO-token sidecar (upstream brainicism/bgutil-ytdlp-pot-provider). The stack does NOT hard-depend
+     on it — if it's down, token escalation no-ops — so a single replica is fine. Upstream image: its
+     UID is image-defined, so we don't pin runAsUser (minimal hardening only) and no HTTP health path
+     is documented → TCP probes. */}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ypd.componentName" (list . $component) }}
+  labels:
+    {{- include "ypd.labels" (list . $component) | nindent 4 }}
+spec:
+  replicas: {{ .Values.providerPot.replicas }}
+  selector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list . $component) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ypd.labels" (list . $component) | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "ypd.serviceAccountName" (list . "provider") }}
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: provider-pot
+          image: "{{ .Values.images.providerPotRepository }}:{{ .Values.images.providerPotTag }}"
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.providerPot.port }}
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.providerPot.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

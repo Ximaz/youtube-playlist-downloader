@@ -1,0 +1,3 @@
+{{- if .Values.frontend.autoscaling.enabled }}
+{{- include "ypd.hpa" (list . "frontend" .Values.frontend.autoscaling) }}
+{{- end }}

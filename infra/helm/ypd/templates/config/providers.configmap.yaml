@@ -1,0 +1,14 @@
+{{/* Provider tuning (ytdl + youtubejs). Not secrets. PORT is set per-container (5000/5001). The
+     PO-token sidecar is optional: if provider-pot is down, token escalation no-ops. */}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ypd.componentName" (list . "providers") }}
+  labels:
+    {{- include "ypd.labels" (list . "providers") | nindent 4 }}
+data:
+  LOG_LEVEL: {{ .Values.config.providers.logLevel | quote }}
+  STREAM_SEGMENT_SIZE: {{ .Values.config.providers.streamSegmentSize | quote }}
+  STREAM_SEGMENT_CONCURRENCY: {{ .Values.config.providers.streamSegmentConcurrency | quote }}
+  POT_PROVIDER_BASE_URL: "http://{{ include "ypd.componentName" (list . "provider-pot") }}:{{ .Values.providerPot.port }}"
+  POT_PROVIDER_TIMEOUT_MS: {{ .Values.config.providers.potTimeoutMs | quote }}

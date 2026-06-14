@@ -23,11 +23,15 @@ talosconfig
 *.kubeconfig
 _out/
 
-# --- SOPS / age private keys (the encrypted *.sops.yaml IS safe to commit) ---
+# --- SOPS / age keys + encrypted secrets ---
+# *.sops.yaml is age-encrypted (technically safe to commit), but this is an open-source repo, so keep
+# REAL credentials out of git entirely — commit only .sops.yaml (config) + secrets.example.yaml.
+# Drop secrets.sops.yaml from this list if you prefer a committed-encrypted (GitOps) workflow.
 *.agekey
 age.key
 keys.txt
 *.vaultpass
+secrets/secrets.sops.yaml
 
 # --- Decrypted secret output (never commit) ---
 secrets/*.plain.yaml

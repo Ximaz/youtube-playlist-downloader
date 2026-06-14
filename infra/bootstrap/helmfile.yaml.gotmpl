@@ -1,0 +1,67 @@
+# Cluster add-ons, declarative + pinned. Run from this directory via `task cluster:addons`
+# (which sets the cwd here and loads versions.env), so every `values:`/hook path below is
+# relative to infra/bootstrap/.
+#
+#   cilium        — already bootstrapped; declared here so it is reconciled from one source of
+#                   truth. The postsync hook re-applies the LB-IPAM pool + L2 policy (idempotent).
+#   cert-manager  — CRDs + controller; postsync hook installs the self-signed / local-CA issuers.
+#   ingress-nginx — the single Service type=LoadBalancer (Cilium hands it .202); WS + long-stream
+#                   timeouts for the Socket.IO gateway and archive downloads.
+#   keda          — event-driven autoscaler for the backend-worker (metrics-api on /scaling/backlog).
+#
+# Versions come from versions.env (ADR-0007 exact pinning); `requiredEnv` fails loudly if unset.
+
+repositories:
+  - name: cilium
+    url: https://helm.cilium.io
+  - name: jetstack
+    url: https://charts.jetstack.io
+  - name: ingress-nginx
+    url: https://kubernetes.github.io/ingress-nginx
+  - name: kedacore
+    url: https://kedacore.github.io/charts
+
+helmDefaults:
+  wait: true
+  waitForJobs: true
+  timeout: 600
+  createNamespace: true
+
+releases:
+  - name: cilium
+    namespace: kube-system
+    chart: cilium/cilium
+    version: {{ requiredEnv "CILIUM_VERSION" | quote }}
+    values:
+      - cilium/values.yaml
+    hooks:
+      - events: ["postsync"]
+        showlogs: true
+        command: kubectl
+        args: ["apply", "-f", "cilium/lb-pool.yaml"]
+
+  - name: cert-manager
+    namespace: cert-manager
+    chart: jetstack/cert-manager
+    version: {{ requiredEnv "CERT_MANAGER_VERSION" | quote }}
+    set:
+      - name: crds.enabled
+        value: true
+    hooks:
+      # Issuers need the CRDs + webhook ready; `wait: true` above gates the hook until then.
+      - events: ["postsync"]
+        showlogs: true
+        command: kubectl
+        args: ["apply", "-f", "cert-manager/issuer.yaml"]
+
+  - name: ingress-nginx
+    namespace: ingress-nginx
+    chart: ingress-nginx/ingress-nginx
+    version: {{ requiredEnv "INGRESS_NGINX_VERSION" | quote }}
+    values:
+      - ingress-nginx/values.yaml
+
+  - name: keda
+    namespace: keda
+    chart: kedacore/keda
+    version: {{ requiredEnv "KEDA_VERSION" | quote }}

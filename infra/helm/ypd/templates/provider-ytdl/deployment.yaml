@@ -1,0 +1,75 @@
+{{- $component := "provider-ytdl" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ypd.componentName" (list . $component) }}
+  labels:
+    {{- include "ypd.labels" (list . $component) | nindent 4 }}
+spec:
+  {{- if not .Values.providerYtdl.autoscaling.enabled }}
+  replicas: {{ .Values.providerYtdl.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list . $component) | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/config/providers.configmap.yaml") $ | sha256sum }}
+      labels:
+        {{- include "ypd.labels" (list . $component) | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "ypd.serviceAccountName" (list . "provider") }}
+      automountServiceAccountToken: false
+      # Spread provider replicas across nodes → distinct egress IPs, so YouTube per-IP throttling on
+      # one node doesn't degrade the whole fleet (ADR-0017).
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "ypd.selectorLabels" (list . $component) | nindent 20 }}
+      securityContext:
+        {{- include "ypd.podSecurityContext" (list . .Values.providerYtdl.runAsUser) | nindent 8 }}
+      containers:
+        - name: provider-ytdl
+          image: {{ include "ypd.image" (list . .Values.images.providerYtdl) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.providerYtdl.port }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "ypd.componentName" (list . "providers") }}
+          env:
+            - name: PORT
+              value: {{ .Values.providerYtdl.port | quote }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.providerYtdl.resources | nindent 12 }}
+          securityContext:
+            {{- include "ypd.containerSecurityContext" (list . .Values.providerYtdl.readOnlyRootFilesystem) | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

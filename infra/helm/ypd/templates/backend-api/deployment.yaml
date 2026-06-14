@@ -1,0 +1,66 @@
+{{- $component := "backend-api" }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ypd.componentName" (list . $component) }}
+  labels:
+    {{- include "ypd.labels" (list . $component) | nindent 4 }}
+spec:
+  {{- if not .Values.backendApi.autoscaling.enabled }}
+  replicas: {{ .Values.backendApi.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "ypd.selectorLabels" (list . $component) | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        # Roll the pods when the backend ConfigMap changes (e.g. enabling google.enabled adds
+        # GOOGLE_REDIRECT_URI) — the restart also re-reads the referenced Secret.
+        checksum/config: {{ include (print $.Template.BasePath "/config/backend.configmap.yaml") $ | sha256sum }}
+      labels:
+        {{- include "ypd.labels" (list . $component) | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "ypd.serviceAccountName" (list . "backend") }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.backendApi.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- include "ypd.podSecurityContext" (list . 1000) | nindent 8 }}
+      containers:
+        - name: backend-api
+          image: {{ include "ypd.image" (list . .Values.images.backend) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.backendApi.port }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "ypd.componentName" (list . "backend") }}
+            - secretRef:
+                name: {{ include "ypd.backendSecretName" . }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.backendApi.resources | nindent 12 }}
+          securityContext:
+            {{- include "ypd.containerSecurityContext" (list . .Values.backendApi.readOnlyRootFilesystem) | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

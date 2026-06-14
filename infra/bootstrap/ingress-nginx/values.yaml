@@ -1,0 +1,46 @@
+# ingress-nginx — the cluster's single internet-facing entrypoint. Its controller Service is the one
+# type=LoadBalancer that Cilium LB-IPAM pins to 192.168.0.202 (the only IP in the `ypd` pool) and
+# L2-announces on ens18. The browser talks only to the frontend BFF through here; /api + /socket.io
+# are proxied internally by Nitro, so the ingress just needs working WebSocket upgrades + long read
+# timeouts for live progress and archive streaming.
+controller:
+  kind: Deployment
+  replicaCount: 2
+
+  service:
+    type: LoadBalancer
+    annotations:
+      # Cilium-native LB-IPAM request (preferred over the deprecated .spec.loadBalancerIP). The pool
+      # is a single /32, so this is belt-and-suspenders — it documents the intended address.
+      lbipam.cilium.io/ips: "192.168.0.202"
+
+  # Make `nginx` the default IngressClass so the app Ingress needs no explicit className.
+  ingressClassResource:
+    default: true
+
+  # NGINX tunables. Long timeouts keep Socket.IO connections and large archive downloads from being
+  # cut at the proxy; body-size 0 disables the upload cap (archives stream through unbounded).
+  config:
+    proxy-read-timeout: "3600"
+    proxy-send-timeout: "3600"
+    proxy-body-size: "0"
+    use-forwarded-headers: "true"
+
+  # Spread the two replicas across nodes so a single node loss can't take ingress fully down.
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: ingress-nginx
+                app.kubernetes.io/component: controller
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi

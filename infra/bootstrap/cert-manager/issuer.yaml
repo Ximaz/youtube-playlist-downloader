@@ -1,0 +1,42 @@
+# Local TLS trust chain (no public CA — the domain is faked by dnsmasq, so ACME/Let's Encrypt is
+# out). A self-signed root mints one long-lived CA; the `ypd-ca` ClusterIssuer signs every app
+# certificate from that CA. Trust `ypd-ca-tls`'s ca.crt on a test device once and the browser
+# warning is gone for all *.pragmacode.fr certs. Swap the Ingress to a real ACME ClusterIssuer
+# when the deployment moves to an owned domain (OVH) — no chart change.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ypd-selfsigned
+spec:
+  selfSigned: {}
+---
+# The root CA certificate, signed by the self-signed issuer. Lives in cert-manager's namespace
+# (cert-manager's --cluster-resource-namespace) so the CA ClusterIssuer can read its key.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ypd-ca
+  namespace: cert-manager
+spec:
+  isCA: true
+  commonName: YPD Local CA
+  secretName: ypd-ca-tls
+  duration: 87600h # 10 years
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: ypd-selfsigned
+    kind: ClusterIssuer
+    group: cert-manager.io
+---
+# The issuer the Ingress references (cert-manager.io/cluster-issuer: ypd-ca). Every leaf cert it
+# signs chains to the trustable root above.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ypd-ca
+spec:
+  ca:
+    secretName: ypd-ca-tls

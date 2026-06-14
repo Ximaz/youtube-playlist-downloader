@@ -1,0 +1,12 @@
+{{/* Frontend (Nuxt BFF) runtime env. BACKEND_URL is SERVER-ONLY (the browser never sees it) and
+     points at the internal backend-api Service. The entrypoint translates BACKEND_URL/COOKIE_SECURE
+     into NUXT_* before Nitro freezes its runtime config. */}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ypd.componentName" (list . "frontend") }}
+  labels:
+    {{- include "ypd.labels" (list . "frontend") | nindent 4 }}
+data:
+  BACKEND_URL: "http://{{ include "ypd.componentName" (list . "backend-api") }}:{{ .Values.backendApi.port }}"
+  COOKIE_SECURE: {{ .Values.frontend.cookieSecure | quote }}

@@ -1,0 +1,66 @@
+name: Infra
+
+# Validates the infrastructure-as-code without touching any cluster: Terraform formatting/validity,
+# the Helm chart (lint + render + kubeconform), and a secret scan. No cloud/cluster creds needed.
+on:
+  push:
+    branches: [main]
+    paths: ["infra/**", ".github/workflows/infra.yml"]
+  pull_request:
+    paths: ["infra/**", ".github/workflows/infra.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    name: Terraform — fmt + validate
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: infra/terraform
+    steps:
+      - uses: actions/checkout@v5
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+
+  helm:
+    name: Helm — lint + template + kubeconform
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      # Helm 3 — Helm 4's plugin/wait changes break the toolchain (see ADR-0019).
+      - uses: azure/setup-helm@v4
+        with:
+          version: "v3.17.3"
+      - name: helm lint (both env overlays)
+        run: |
+          helm lint infra/helm/ypd -f infra/helm/ypd/values-proxmox.yaml
+          helm lint infra/helm/ypd -f infra/helm/ypd/values-ovh.yaml
+      - name: Install kubeconform
+        run: |
+          curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin kubeconform
+      - name: helm template | kubeconform (strict)
+        run: |
+          for env in proxmox ovh; do
+            echo "::group::kubeconform values-$env"
+            helm template ypd infra/helm/ypd -n ypd -f infra/helm/ypd/values-$env.yaml \
+              | kubeconform -strict -ignore-missing-schemas -summary
+            echo "::endgroup::"
+          done
+
+  secrets:
+    name: Secret scan — gitleaks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
