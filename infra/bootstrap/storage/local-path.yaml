@@ -1,21 +1,10 @@
-# local-path-provisioner (Rancher, pinned v0.0.30) — vendored from the official upstream manifest
-# rather than a third-party Helm chart, to keep the supply chain to Rancher's own image (ADR-0007).
-# Customizations vs upstream:
-#   * nodePathMap routes EVERY PV to /var/mnt/data — the Talos user volume on the ypd.io/data worker
-#     (provisioned in terraform/machine-config.tf). The chart's StatefulSets carry
-#     nodeSelector: ypd.io/data=true, so WaitForFirstConsumer always binds the PV on that node, where
-#     /var/mnt/data exists. Pinning by node LABEL (not name) survives the auto-stable hostname.
-#   * StorageClass `local-path` is the cluster default, WaitForFirstConsumer (bind on the consumer's
-#     node), reclaimPolicy Delete.
-#   * helperPod image pinned to busybox:1.37.0.
-# Data survives reboots/upgrades because the volume is a dedicated disk partition, not EPHEMERAL.
+# local-path-provisioner (Rancher v0.0.30) — vendored from upstream manifest. See infra/docs/architecture.md.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: local-path-storage
   labels:
-    # The provisioner + helper pods use hostPath and run as root — exempt this system namespace from
-    # the cluster's baseline PodSecurity enforcement.
+    # privileged: provisioner + helper pods use hostPath and run as root.
     pod-security.kubernetes.io/enforce: privileged
 ---
 apiVersion: v1

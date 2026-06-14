@@ -1,10 +1,5 @@
-# YPD chart defaults (cloud-agnostic). Per-env overlays (values-proxmox.yaml / values-ovh.yaml)
-# only flip the deltas: which deps run in-cluster, the ingress host, the TLS issuer, OAuth.
-#
-# Secret model (see PART A / Design ref §1): the chart NEVER templates real credential values. In
-# prod it references pre-created Secrets via `secrets.existingSecret(Worker)`; `secrets.create` is a
-# DEV-ONLY escape hatch that renders a Secret from `secrets.values`. Real creds live only in
-# infra/secrets/secrets.sops.yaml (age-encrypted) and are applied out-of-band before deploy.
+# YPD chart defaults (cloud-agnostic). Per-env overlays flip the deltas. See infra/docs/architecture.md.
+# Secret model: chart NEVER templates real creds; references pre-created Secrets in prod.
 
 global:
   registry: ghcr.io/ximaz
@@ -34,7 +29,6 @@ secrets:
   workerValues: {} # worker subset: { CACHE_URL, QUEUE_CACHE_URL, EPHEMERAL_CACHE_URL, S3_ACCESS_KEY, S3_SECRET_KEY }
 
 # ------------------------------------------------------------------ Stateful deps (pluggable)
-# Names of the pre-created credential Secrets for the in-cluster deps (applied out-of-band via SOPS).
 valkey:
   inCluster: true
   split: false # false: one instance (all 3 URLs equal); true: -valkey-queue + -valkey-ephemeral
@@ -63,7 +57,7 @@ seaweedfs:
     requests: { cpu: 100m, memory: 256Mi }
     limits: { memory: 1Gi }
 
-# StorageClass + node pinning for the in-cluster StatefulSets (the Talos user volume worker).
+# StorageClass + node pinning for the in-cluster StatefulSets (Talos user volume worker).
 persistence:
   storageClassName: local-path
   nodeSelector:
@@ -72,7 +66,7 @@ persistence:
 # ------------------------------------------------------------------ Non-secret config (ConfigMap)
 config:
   s3:
-    # endpoint resolves to the in-cluster SeaweedFS Service when seaweedfs.inCluster=true (helper).
+    # endpoint resolves to in-cluster SeaweedFS Service when seaweedfs.inCluster=true (helper).
     endpoint: "" # external S3 endpoint when seaweedfs.inCluster=false
     region: us-east-1
     bucket: ypd
@@ -101,8 +95,7 @@ config:
 # ------------------------------------------------------------------ Google OAuth (real creds = Secret)
 google:
   enabled: false # off for the first deploy; anonymous downloads need no OAuth
-  # redirectUri defaults to https://<ingress.host>/api/auth/google/callback (must be registered).
-  redirectUri: ""
+  redirectUri: "" # defaults to https://<ingress.host>/api/auth/google/callback (must be registered)
 
 # ------------------------------------------------------------------ Ingress + TLS
 ingress:
@@ -120,7 +113,7 @@ networkPolicy:
 
 # ------------------------------------------------------------------ Migrations / GC
 migrate:
-  enabled: true # pre-install/pre-upgrade Job runs `prisma migrate deploy`
+  enabled: true # post-install/post-upgrade Job runs `prisma migrate deploy`
 prune:
   enabled: true
   schedule: "30 3 * * *" # daily 03:30
@@ -160,8 +153,7 @@ worker:
   pdb:
     enabled: true
     maxUnavailable: 1
-  # ffmpeg/yt-dlp write temp files → ship writable root first, tighten with emptyDir /tmp later.
-  readOnlyRootFilesystem: false
+  readOnlyRootFilesystem: false # ffmpeg/yt-dlp write temp files
 
 frontend:
   replicas: 2

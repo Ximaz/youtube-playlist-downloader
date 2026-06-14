@@ -3,10 +3,7 @@
 {{- fail "valkey.split=true is not implemented in this chart yet — deploy with valkey.split=false (single instance). Splitting into -valkey-queue + -valkey-ephemeral is a documented follow-up." }}
 {{- end }}
 {{- $component := "valkey" }}
-# Single in-cluster Valkey. The ACL is the VERBATIM least-privilege command from docker-compose.yml
-# (ADR-0011): default user OFF, the named user gets exactly what BullMQ/iovalkey/the Socket.IO adapter
-# need, minus @dangerous (no KEYS/CONFIG/FLUSHALL). We override the image entrypoint, so the pod runs
-# as a pinned non-root uid with fsGroup owning the /data PVC.
+# Single in-cluster Valkey. ACL args below are VERBATIM from docker-compose.yml (keep in sync).
 apiVersion: v1
 kind: Service
 metadata:

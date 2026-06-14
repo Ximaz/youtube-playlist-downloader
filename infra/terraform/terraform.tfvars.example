@@ -1,8 +1,5 @@
-# Copy to terraform.tfvars (gitignored) and adjust. The Proxmox ENDPOINT + API TOKEN are NOT here —
-# they come from the environment so no secret lands in a file:
-#   export PROXMOX_VE_ENDPOINT="https://goliath.local:8006/"
-#   export PROXMOX_VE_API_TOKEN="terraform@pve!provider=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-#   ssh-add ~/.ssh/id_ed25519        # so the provider's ssh-agent auth works if ever needed
+# Copy to terraform.tfvars (gitignored) and adjust. Proxmox ENDPOINT + API TOKEN come from the
+# environment (PROXMOX_VE_ENDPOINT, PROXMOX_VE_API_TOKEN), not here, so no secret lands in a file.
 
 # --- Proxmox host (goliath) ---
 pve_node             = "goliath"

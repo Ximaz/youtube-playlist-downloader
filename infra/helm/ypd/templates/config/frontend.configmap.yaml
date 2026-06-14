@@ -1,6 +1,4 @@
-{{/* Frontend (Nuxt BFF) runtime env. BACKEND_URL is SERVER-ONLY (the browser never sees it) and
-     points at the internal backend-api Service. The entrypoint translates BACKEND_URL/COOKIE_SECURE
-     into NUXT_* before Nitro freezes its runtime config. */}}
+{{/* Frontend (Nuxt BFF) runtime env. BACKEND_URL is server-only (browser never sees it). */}}
 apiVersion: v1
 kind: ConfigMap
 metadata:

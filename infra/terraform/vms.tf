@@ -1,6 +1,5 @@
-# One VM per node. Talos requirements: UEFI (ovmf) + q35 + host CPU + VirtIO. The Talos ISO is the
-# boot CD-ROM; the node installs to scsi0 then boots from disk. qemu-guest-agent (from the image
-# schematic) lets Proxmox report the maintenance DHCP IP that the first config apply targets.
+# One VM per node. Talos needs UEFI (ovmf) + q35 + host CPU + VirtIO; boots the ISO, installs to
+# scsi0. See infra/docs/architecture.md.
 resource "proxmox_virtual_environment_vm" "node" {
   for_each = local.nodes
 
@@ -34,7 +33,7 @@ resource "proxmox_virtual_environment_vm" "node" {
     type         = "4m"
   }
 
-  # System disk — Talos installs here (qcow2 = thin-provisioned on the dir datastore).
+  # System disk — Talos installs here (qcow2 = thin-provisioned).
   disk {
     datastore_id = var.vm_datastore
     interface    = "scsi0"
@@ -62,14 +61,13 @@ resource "proxmox_virtual_environment_vm" "node" {
     model  = "virtio"
   }
 
-  # Boot from the system disk first; an empty disk falls through to the ISO (maintenance mode),
-  # and once Talos is installed the disk is bootable.
+  # Disk first; empty disk falls through to the ISO (maintenance mode); installed disk is bootable.
   boot_order = ["scsi0", "ide3"]
 
   started = true
 
   lifecycle {
-    # The guest agent updates these post-boot; don't churn the VM on IP changes.
+    # Guest agent updates these post-boot; don't churn the VM on IP changes.
     ignore_changes = [started]
   }
 }

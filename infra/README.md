@@ -2,7 +2,10 @@
 
 Talos Linux Kubernetes on Proxmox, provisioned by Terraform; Cilium for networking/LB; Helmfile +
 Taskfile for the add-ons and app; SOPS+age for secrets. Cloud-agnostic — the same chart targets OVH
-managed services later via values. See `../plan.md` for the full design.
+managed services later via values.
+
+> **Design reference:** [`docs/architecture.md`](docs/architecture.md). **Decisions:** ADR-0019 in
+> [`../docs/decisions/README.md`](../docs/decisions/README.md). This file is the operator runbook.
 
 > Status: **cluster + add-ons + storage are live.** The app Helm chart deploys with `task deploy`.
 

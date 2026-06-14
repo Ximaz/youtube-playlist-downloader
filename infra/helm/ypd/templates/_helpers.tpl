@@ -100,7 +100,7 @@ app.kubernetes.io/instance: {{ $root.Release.Name }}
 {{- end -}}
 
 {{/* ----------------------------------------------------------------- securityContext */}}
-{{/* Pod-level. Arg: (list $ <uid|"">). Empty uid → rely on the image's numeric USER (provider-pot). */}}
+{{/* Pod-level. Arg: (list $ <uid|"">). Empty uid: rely on image's numeric USER. */}}
 {{- define "ypd.podSecurityContext" -}}
 {{- $uid := index . 1 -}}
 {{- if $uid }}

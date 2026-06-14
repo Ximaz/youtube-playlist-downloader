@@ -1,9 +1,5 @@
-# OVH (or any managed-cloud) overlay — example of flipping every stateful dep to a managed service
-# with ZERO image/template change. The in-cluster StatefulSets are not rendered; the credentialed
-# URLs (CACHE_URL / DATABASE_URL / S3_*) come entirely from the referenced Secret, whose values point
-# at the managed endpoints. Only S3_ENDPOINT (non-secret) is set here.
-#
-# This file is a STARTING POINT for the managed path (Step F / later) — fill host + endpoints.
+# OVH (managed-cloud) overlay — flip every stateful dep to a managed service, values-only.
+# Credentialed URLs (CACHE_URL / DATABASE_URL / S3_*) come from the referenced Secret. STARTING POINT: fill host + endpoints.
 
 secrets:
   existingSecret: ypd-backend-secrets

@@ -6,8 +6,7 @@ metadata:
   labels:
     {{- include "ypd.labels" (list . $component) | nindent 4 }}
 spec:
-  # No replicas field: the KEDA ScaledObject (via its managed HPA) owns the replica count. Setting it
-  # here would fight the autoscaler on every reconcile.
+  # No replicas: KEDA ScaledObject owns the replica count.
   selector:
     matchLabels:
       {{- include "ypd.selectorLabels" (list . $component) | nindent 6 }}
@@ -20,8 +19,7 @@ spec:
     spec:
       serviceAccountName: {{ include "ypd.serviceAccountName" (list . "worker") }}
       automountServiceAccountToken: false
-      # Long grace so BullMQ drains in-flight download/convert jobs before SIGKILL (90s lockDuration
-      # re-runs anything still stalled).
+      # Long grace so BullMQ drains in-flight jobs before SIGKILL.
       terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
       securityContext:
         {{- include "ypd.podSecurityContext" (list . 1000) | nindent 8 }}
@@ -33,7 +31,7 @@ spec:
             - name: http
               containerPort: {{ .Values.worker.port }}
           envFrom:
-            # Shares the non-secret backend ConfigMap; the worker Secret omits DATABASE_URL + GOOGLE_*.
+            # Shared backend ConfigMap; worker Secret omits DATABASE_URL + GOOGLE_*.
             - configMapRef:
                 name: {{ include "ypd.componentName" (list . "backend") }}
             - secretRef:

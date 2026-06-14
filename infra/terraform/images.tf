@@ -1,5 +1,4 @@
-# Talos image with the qemu-guest-agent extension so Proxmox sees each VM's IP (needed to drive the
-# first config apply). The schematic ID is deterministic from its contents.
+# Talos image with the qemu-guest-agent extension (so Proxmox sees each VM's IP for the first apply).
 resource "talos_image_factory_schematic" "this" {
   schematic = yamlencode({
     customization = {
@@ -10,7 +9,7 @@ resource "talos_image_factory_schematic" "this" {
   })
 }
 
-# Resolve the matching ISO + installer download URLs for our Talos version + schematic.
+# ISO + installer download URLs for our Talos version + schematic.
 data "talos_image_factory_urls" "this" {
   talos_version = var.talos_version
   schematic_id  = talos_image_factory_schematic.this.id

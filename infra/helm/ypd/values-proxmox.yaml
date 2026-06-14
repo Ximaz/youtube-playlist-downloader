@@ -1,6 +1,5 @@
 # Proxmox/Talos overlay — in-cluster everything, local domain, self-signed CA, OAuth off first.
-# Real credentials are NOT here: they live in infra/secrets/secrets.sops.yaml (age-encrypted) and are
-# applied out-of-band as the Secrets referenced by secrets.existingSecret(Worker) + the dep secrets.
+# Real creds live in infra/secrets/secrets.sops.yaml (age-encrypted), applied out-of-band.
 
 global:
   imageTag: latest

@@ -21,8 +21,7 @@ spec:
     spec:
       serviceAccountName: {{ include "ypd.serviceAccountName" (list . "provider") }}
       automountServiceAccountToken: false
-      # Spread provider replicas across nodes → distinct egress IPs, so YouTube per-IP throttling on
-      # one node doesn't degrade the whole fleet (ADR-0017).
+      # Spread replicas across nodes → distinct egress IPs (ADR-0017); see infra/docs/architecture.md
       affinity:
         podAntiAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:

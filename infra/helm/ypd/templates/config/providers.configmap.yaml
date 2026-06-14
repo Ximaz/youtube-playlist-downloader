@@ -1,5 +1,4 @@
-{{/* Provider tuning (ytdl + youtubejs). Not secrets. PORT is set per-container (5000/5001). The
-     PO-token sidecar is optional: if provider-pot is down, token escalation no-ops. */}}
+{{/* Provider tuning (ytdl + youtubejs). PORT is set per-container. */}}
 apiVersion: v1
 kind: ConfigMap
 metadata:

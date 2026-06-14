@@ -1,5 +1,5 @@
-# Apply each node's config to its maintenance (DHCP) address; the config then moves the node to its
-# static IP. Re-runs target the static IP (the agent reports it once configured), so this is stable.
+# Apply each node's config to its maintenance (DHCP) address; the config then moves it to its static
+# IP. Re-runs target the static IP (the agent reports it once configured), so this is stable.
 resource "talos_machine_configuration_apply" "node" {
   for_each = local.nodes
 

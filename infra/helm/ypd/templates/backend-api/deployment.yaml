@@ -15,8 +15,7 @@ spec:
   template:
     metadata:
       annotations:
-        # Roll the pods when the backend ConfigMap changes (e.g. enabling google.enabled adds
-        # GOOGLE_REDIRECT_URI) — the restart also re-reads the referenced Secret.
+        # Roll pods on backend ConfigMap/Secret change.
         checksum/config: {{ include (print $.Template.BasePath "/config/backend.configmap.yaml") $ | sha256sum }}
       labels:
         {{- include "ypd.labels" (list . $component) | nindent 8 }}

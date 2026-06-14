@@ -1,9 +1,5 @@
 {{- if .Values.migrate.enabled }}
-{{/* Prisma migrations run in ONE place: this Job, never a serving pod (ConfigMap sets
-     MIGRATE_ON_START=false). It is a post-install/post-upgrade hook because the in-cluster Postgres
-     StatefulSet is part of THIS release — a pre-install hook would run before Postgres exists. With
-     helm --wait, the hook fires only after the release's resources (incl. Postgres) are Ready; the
-     wait-postgres initContainer is belt-and-suspenders for the in-cluster case. */}}
+{{/* Prisma migrations Job. post-install/post-upgrade hook: in-cluster Postgres is absent at pre-install. */}}
 apiVersion: batch/v1
 kind: Job
 metadata:

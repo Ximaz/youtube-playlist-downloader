@@ -1,10 +1,5 @@
 {{- if .Values.networkPolicy.enabled }}
-{{/* Per-component NetworkPolicies (Cilium enforces them). Default off — enable + validate once the
-     app is up (Step F). Each egress policy re-allows DNS (kube-dns) since selecting a pod for egress
-     otherwise blocks name resolution. The data stores accept ingress only from the components that
-     legitimately use them; providers may egress to the internet (YouTube IPs aren't pinnable) but
-     accept ingress only from the backend tiers. /scaling/backlog stays unauthenticated — it is
-     fenced here (api ingress :3000 only from frontend + the KEDA namespace). */}}
+{{/* Per-component NetworkPolicies (Cilium-enforced). See infra/docs/architecture.md. */}}
 {{- $apiSel := dict "app.kubernetes.io/name" "backend-api" }}
 {{- $workerSel := dict "app.kubernetes.io/name" "backend-worker" }}
 ---
@@ -54,7 +49,7 @@ spec:
       ports:
         - { protocol: TCP, port: {{ .Values.backendApi.port }} }
 ---
-# backend-api: ingress :3000 from frontend + the KEDA namespace (the metrics-api scaler).
+# backend-api: ingress :3000 from frontend + the KEDA namespace (fences /scaling/backlog).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

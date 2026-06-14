@@ -1,10 +1,7 @@
 {{- if .Values.postgres.inCluster }}
 {{- $component := "postgres" }}
-# In-cluster Postgres (OAuth tokens + sessions — MUST persist). We keep the stock entrypoint (runs as
-# root, chowns PGDATA, drops to the postgres user via gosu), so no runAsUser is pinned and caps are
-# left at the container default that gosu needs — hardening to a non-root uid is a Step F follow-up.
-# PGDATA is a SUBDIRECTORY of the mount so Postgres creates it with the 0700 perms it requires,
-# sidestepping the volume-root permission check.
+# In-cluster Postgres (OAuth tokens + sessions; MUST persist). Stock entrypoint, so no runAsUser pinned.
+# PGDATA is a subdirectory of the mount so Postgres can create it with the 0700 perms it requires.
 apiVersion: v1
 kind: Service
 metadata:

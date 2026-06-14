@@ -1,8 +1,5 @@
 {{- $component := "provider-pot" }}
-{{/* PO-token sidecar (upstream brainicism/bgutil-ytdlp-pot-provider). The stack does NOT hard-depend
-     on it — if it's down, token escalation no-ops — so a single replica is fine. Upstream image: its
-     UID is image-defined, so we don't pin runAsUser (minimal hardening only) and no HTTP health path
-     is documented → TCP probes. */}}
+{{/* PO-token sidecar; non-critical (token escalation no-ops if down). Upstream image: UID image-defined (no runAsUser pin), no HTTP health path → TCP probes. See infra/docs/architecture.md */}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

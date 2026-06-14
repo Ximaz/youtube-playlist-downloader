@@ -1,7 +1,5 @@
 {{- if .Values.prune.enabled }}
-{{/* Anonymous-session GC (ADR-0014 follow-up): runs `node dist/main.prune.js` on the backend image,
-     deleting account-less sessions older than PRUNE_OLDER_THAN_DAYS. Needs the backend Secret
-     (DATABASE_URL + CACHE_URL); concurrencyPolicy Forbid so a slow run never overlaps itself. */}}
+{{/* Anonymous-session GC CronJob (runs main.prune.js). concurrencyPolicy Forbid: runs must not overlap. */}}
 apiVersion: batch/v1
 kind: CronJob
 metadata:

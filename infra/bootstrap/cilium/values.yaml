@@ -1,18 +1,14 @@
-# Cilium for Talos: CNI + kube-proxy replacement + L2-announced LoadBalancer (replaces MetalLB).
-# Talos ships no CNI and disables kube-proxy (set in the Talos machine config), so Cilium provides
-# both. Keep k8sServiceHost in sync with terraform `cluster_vip`.
+# Cilium for Talos: CNI + kube-proxy replacement + L2 LoadBalancer. See infra/docs/architecture.md.
 
 ipam:
   mode: kubernetes
 
 kubeProxyReplacement: true
-# The API server address Cilium dials (no kube-proxy → the in-cluster Service isn't routable yet).
-# Uses the control-plane VIP; Talos KubePrism (localhost:7445) is an alternative.
+# Control-plane VIP; keep in sync with terraform `cluster_vip`.
 k8sServiceHost: "192.168.0.201"
 k8sServicePort: 6443
 
-# Talos-specific: cgroupv2 is already mounted at /sys/fs/cgroup, and the agent/init need an explicit
-# capability set under Talos's locked-down runtime.
+# Talos-specific: cgroupv2 pre-mounted; explicit capabilities under Talos's locked-down runtime.
 cgroup:
   autoMount:
     enabled: false
@@ -23,14 +19,14 @@ securityContext:
       [CHOWN, KILL, NET_ADMIN, NET_RAW, IPC_LOCK, SYS_ADMIN, SYS_RESOURCE, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     cleanCiliumState: [NET_ADMIN, SYS_ADMIN, SYS_RESOURCE]
 
-# Bare-metal LoadBalancer: announce Service IPs over L2 (ARP). Requires kubeProxyReplacement (above).
+# Bare-metal LoadBalancer: announce Service IPs over L2 (ARP). Requires kubeProxyReplacement.
 l2announcements:
   enabled: true
 externalIPs:
   enabled: true
 loadBalancer:
   algorithm: maglev
-# L2 announcements are k8s-API-chatty; raise the client rate limit (Cilium docs recommendation).
+# L2 announcements are API-chatty; raise the client rate limit (Cilium docs).
 k8sClientRateLimit:
   qps: 20
   burst: 40

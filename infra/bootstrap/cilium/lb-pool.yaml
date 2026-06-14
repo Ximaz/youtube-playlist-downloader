@@ -1,5 +1,4 @@
-# Cilium LB-IPAM pool + L2 announcement — the bare-metal LoadBalancer (replaces MetalLB).
-# Service type=LoadBalancer gets an IP from this pool, announced via ARP on the node NIC (ens18).
+# Cilium LB-IPAM pool + L2 announcement — bare-metal LoadBalancer. See infra/docs/architecture.md.
 apiVersion: cilium.io/v2alpha1
 kind: CiliumLoadBalancerIPPool
 metadata:

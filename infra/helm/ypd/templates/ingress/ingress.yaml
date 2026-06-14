@@ -1,7 +1,5 @@
 {{- if .Values.ingress.enabled }}
-{{/* The browser reaches ONLY the frontend BFF; /api + /socket.io are proxied internally by Nitro, so
-     the ingress fronts the frontend Service alone. ingress-nginx handles the WS upgrade; the long
-     read/send timeouts are set globally on the controller (bootstrap/ingress-nginx/values.yaml). */}}
+{{/* Ingress fronts the frontend Service alone; /api + /socket.io are proxied internally by Nitro. */}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

@@ -1,4 +1,4 @@
-# Cluster-wide secrets (CA + keys). Treated as sensitive in state — keep the backend secure.
+# Cluster-wide secrets (CA + keys). Sensitive in state — keep the backend secure.
 resource "talos_machine_secrets" "this" {
   talos_version = var.talos_version
 }
@@ -7,10 +7,8 @@ locals {
   # First VirtIO SCSI disk Talos installs onto.
   install_disk = "/dev/sda"
 
-  # Applied to every node: install target + image (so the qemu-guest-agent extension persists after
-  # install), DNS, CNI=none + kube-proxy disabled (Cilium provides both), and optional LUKS2 disk
-  # encryption of STATE+EPHEMERAL → etcd-at-rest (ADR-0008's LUKS, defense-in-depth with K8s secret
-  # encryption added later).
+  # Applied to every node: install target + image (persists the qemu-guest-agent extension), DNS,
+  # CNI=none + kube-proxy disabled (Cilium provides both), optional LUKS2 of STATE+EPHEMERAL.
   common_patch = yamlencode({
     machine = merge(
       {
@@ -35,14 +33,9 @@ locals {
     }
   })
 
-  # Applied ONLY to the stateful worker (data == true). Two extra config documents:
-  #  1. machine.nodeLabels — so the chart's local-path provisioner + StatefulSets pin here by LABEL
-  #     (robust against the random auto-stable hostname).
-  #  2. UserVolumeConfig — provision + mount the second virtio disk (sdb, the only non-system disk)
-  #     as a Talos user volume at /var/mnt/data. Talos creates the partition + xfs and mounts it; the
-  #     volume survives reboots and OS upgrades (unlike EPHEMERAL on a reset). minSize floor only →
-  #     the partition grows to fill the disk. Added as a SEPARATE document (kind != Config) so the
-  #     configpatcher appends it rather than merging into v1alpha1.Config.
+  # Applied ONLY to the stateful worker (data == true): a nodeLabel so the chart pins here by LABEL,
+  # and a UserVolumeConfig mounting the second virtio disk at /var/mnt/data (survives reboots/upgrades).
+  # Separate document (kind != Config) so configpatcher appends rather than merges. See infra/docs/architecture.md.
   data_node_patches = [
     yamlencode({
       machine = {
@@ -68,8 +61,7 @@ locals {
   ]
 }
 
-# Per-node machine config: common patch + hostname + static IP (+ the API VIP on control-planes).
-# Interface is matched by driver (virtio_net) rather than a guessed name like eth0/ens18.
+# Per-node machine config: common patch + hostname + static IP (+ API VIP on control-planes).
 data "talos_machine_configuration" "node" {
   for_each = local.nodes
 
@@ -83,10 +75,8 @@ data "talos_machine_configuration" "node" {
   config_patches = concat(
     [
       local.common_patch,
-      # NOTE: hostname is intentionally NOT set under machine.network — Talos 1.12 emits a separate
-      # `HostnameConfig` document (auto: stable), and setting it in both places is rejected
-      # ("static hostname is already set in v1alpha1 config"). Per-node static IP + the control-plane
-      # VIP go here; the interface is matched by driver (the NIC is ens18 on Proxmox).
+      # NOTE: hostname is intentionally NOT set here — Talos 1.12 emits a separate HostnameConfig
+      # (auto: stable), and setting it in both places is rejected. Interface matched by driver (virtio_net).
       yamlencode({
         machine = {
           network = {
@@ -104,7 +94,7 @@ data "talos_machine_configuration" "node" {
         }
       }),
     ],
-    # The stateful worker also gets the data-disk user volume + the ypd.io/data label.
+    # Stateful worker also gets the data-disk user volume + the ypd.io/data label.
     each.value.data ? local.data_node_patches : [],
   )
 }

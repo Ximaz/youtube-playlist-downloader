@@ -1,6 +1,4 @@
-{{/* Non-secret backend env, shared by backend-api AND backend-worker (both load configuration.ts).
-     Credentialed values (CACHE_URL, DATABASE_URL, S3_ACCESS/SECRET, GOOGLE_*) come from the Secret,
-     NOT here. The worker ignores the api-only keys (MIGRATE_ON_START, GOOGLE_REDIRECT_URI). */}}
+{{/* Non-secret backend env, shared by backend-api and backend-worker. Credentialed values come from the Secret. */}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -9,7 +7,7 @@ metadata:
     {{- include "ypd.labels" (list . "backend") | nindent 4 }}
 data:
   BACKEND_PORT: "3000"
-  # Providers (fallback order + internal URLs + breaker knobs)
+  # Providers
   PROVIDER_ORDER: {{ .Values.config.providers.order | quote }}
   PROVIDER_YTDL_URL: "http://{{ include "ypd.componentName" (list . "provider-ytdl") }}:{{ .Values.providerYtdl.port }}"
   PROVIDER_YOUTUBEJS_URL: "http://{{ include "ypd.componentName" (list . "provider-youtubejs") }}:{{ .Values.providerYoutubejs.port }}"
@@ -20,10 +18,10 @@ data:
   # Worker pools
   DOWNLOAD_CONCURRENCY: {{ .Values.config.worker.downloadConcurrency | quote }}
   CONVERT_CONCURRENCY: {{ .Values.config.worker.convertConcurrency | quote }}
-  # Cache (non-secret tuning; the credentialed URL is in the Secret)
+  # Cache (credentialed URL is in the Secret)
   METADATA_CACHE_TTL: {{ .Values.config.cache.metadataTtl | quote }}
   CACHE_COMMAND_TIMEOUT_MS: {{ .Values.config.cache.commandTimeoutMs | quote }}
-  # S3 client (endpoint resolves to the in-cluster SeaweedFS Service when inCluster)
+  # S3 client (endpoint resolves to in-cluster SeaweedFS Service when inCluster)
   S3_ENDPOINT: {{ include "ypd.s3Endpoint" . | quote }}
   S3_REGION: {{ .Values.config.s3.region | quote }}
   S3_BUCKET: {{ .Values.config.s3.bucket | quote }}
@@ -31,10 +29,10 @@ data:
   S3_CONNECTION_TIMEOUT_MS: {{ .Values.config.s3.connectionTimeoutMs | quote }}
   S3_REQUEST_TIMEOUT_MS: {{ .Values.config.s3.requestTimeoutMs | quote }}
   S3_MAX_ATTEMPTS: {{ .Values.config.s3.maxAttempts | quote }}
-  # API-only: migrations are owned by the pre-flight Job, never by a serving pod (Design ref §4).
+  # API-only: migrations owned by the pre-flight Job, never a serving pod.
   MIGRATE_ON_START: "false"
   TMPDIR: "/tmp"
   {{- if .Values.google.enabled }}
-  # OAuth callback (public, non-secret). Must equal the URI registered in the Google console.
+  # Must equal the redirect URI registered in the Google console.
   GOOGLE_REDIRECT_URI: {{ include "ypd.googleRedirectUri" . | quote }}
   {{- end }}

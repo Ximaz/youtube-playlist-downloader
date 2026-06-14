@@ -7,7 +7,7 @@ description: >-
   credentials stay out of git.
 type: application
 version: 0.1.0
-# Image tags are driven by .Values.global.imageTag (GHCR), independent of the chart version.
+# Image tags driven by .Values.global.imageTag (GHCR), independent of chart version.
 appVersion: "latest"
 home: https://github.com/ximaz/youtube-playlist-downloader
 sources:

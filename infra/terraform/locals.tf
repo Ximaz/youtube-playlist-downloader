@@ -1,5 +1,5 @@
 locals {
-  # One map of every node (control-plane + worker) keyed by hostname.
+  # Every node (control-plane + worker) keyed by hostname.
   control_planes = {
     for i, ip in var.control_plane_ips :
     "${var.cluster_name}-cp-${format("%02d", i + 1)}" => {
@@ -20,7 +20,7 @@ locals {
       cores  = var.worker_cores
       memory = var.worker_memory
       vmid   = var.vmid_base + 10 + i
-      data   = i == 0 # the first worker carries the persistent data disk; stateful pods pin here
+      data   = i == 0 # first worker carries the persistent data disk; stateful pods pin here
     }
   }
 
@@ -28,9 +28,8 @@ locals {
 
   cluster_endpoint = "https://${var.cluster_vip}:6443"
 
-  # The maintenance-mode IP each VM gets from DHCP (reported by the qemu-guest-agent). The first
-  # config apply targets this; the config then pins the node to its static IP. Requires DHCP on the
-  # bridge and the static IPs (.210-.213) to be OUTSIDE the DHCP pool.
+  # Maintenance-mode DHCP IP per VM (from qemu-guest-agent); first apply targets it, then the config
+  # pins the static IP. Requires DHCP on the bridge and static IPs (.210-.213) OUTSIDE the DHCP pool.
   node_maintenance_ip = {
     for k, vm in proxmox_virtual_environment_vm.node :
     k => try(

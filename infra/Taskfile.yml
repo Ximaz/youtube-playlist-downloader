@@ -1,12 +1,9 @@
-# Single entrypoint for the YPD infrastructure. Install go-task: `brew install go-task`.
-# Run `task` (or `task --list`) to see everything.
+# YPD infrastructure entrypoint (go-task). Run `task --list`.
 version: "3"
 
 dotenv: ["versions.env"]
 
-# Helm 4's new plugin format + reworked --wait hang helmfile/helm-secrets on the webhook charts
-# (cert-manager / ingress-nginx). This repo standardizes on Helm 3 with an ISOLATED plugin dir so it
-# never loads the Helm-4-format plugins. Install Helm 3 at ~/.local/bin/helm3 (see README).
+# Helm 3 with isolated plugin dir: Helm-4 plugins hang on webhook charts. See infra/docs/architecture.md.
 env:
   HELM_PLUGINS: "{{.HOME}}/.config/helm3-plugins"
 
@@ -21,7 +18,7 @@ tasks:
       - task --list
     silent: true
 
-  # ----------------------------------------------------------------- Cluster (Terraform + Talos)
+  # --- Cluster (Terraform + Talos) ---
   tf:fmt:
     desc: Format Terraform
     dir: "{{.TF_DIR}}"
@@ -53,7 +50,7 @@ tasks:
     dir: "{{.TF_DIR}}"
     cmds: [terraform destroy]
 
-  # ----------------------------------------------------------------- Add-ons + app
+  # --- Add-ons + app ---
   cluster:addons:
     desc: Install Cilium + cert-manager + ingress-nginx + KEDA (helmfile) + local-path storage
     dir: "{{.TASKFILE_DIR}}/bootstrap"
@@ -73,14 +70,13 @@ tasks:
     cmds:
       - |
         set -euo pipefail
-        # 1) namespace with baseline PodSecurity (provider-youtubejs runs as a named system user).
+        # baseline PodSecurity: provider-youtubejs runs as a named system user.
         kubectl create namespace ypd --dry-run=client -o yaml | kubectl apply -f -
         kubectl label --overwrite namespace ypd \
           pod-security.kubernetes.io/enforce=baseline \
           pod-security.kubernetes.io/warn=restricted \
           pod-security.kubernetes.io/audit=restricted
-        # 2) decrypt + apply the per-image Secrets out-of-band — credentials never pass through Helm.
+        # Secrets applied out-of-band: credentials never pass through Helm.
         sops -d secrets/secrets.sops.yaml | kubectl apply -n ypd -f -
-        # 3) the chart (existingSecret references the Secrets created above).
         "{{.HELM3}}" upgrade --install ypd helm/ypd -n ypd \
           -f helm/ypd/values-proxmox.yaml --wait --timeout 600s
