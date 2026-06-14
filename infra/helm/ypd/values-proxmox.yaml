@@ -26,4 +26,4 @@ ingress:
     issuer: ypd-ca
 
 networkPolicy:
-  enabled: false
+  enabled: true # validated against the running app — see infra/docs/architecture.md §5
