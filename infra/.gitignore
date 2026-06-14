@@ -1,0 +1,34 @@
+# --- Terraform ---
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars            # real values (endpoints/IPs are non-secret but env-specific) — keep out of git
+!*.tfvars.example
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# --- Proxmox API credentials sourced at deploy time (never commit) ---
+.proxmox.env
+*.proxmox.env
+
+# --- Generated cluster credentials (mTLS — treat as secrets) ---
+kubeconfig
+talosconfig
+*.kubeconfig
+_out/
+
+# --- SOPS / age private keys (the encrypted *.sops.yaml IS safe to commit) ---
+*.agekey
+age.key
+keys.txt
+*.vaultpass
+
+# --- Decrypted secret output (never commit) ---
+secrets/*.plain.yaml
+secrets/secrets.yaml

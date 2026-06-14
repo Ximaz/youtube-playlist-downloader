@@ -1,0 +1,58 @@
+# Single entrypoint for the YPD infrastructure. Install go-task: `brew install go-task`.
+# Run `task` (or `task --list`) to see everything.
+version: "3"
+
+dotenv: ["versions.env"]
+
+vars:
+  TF_DIR: "{{.TASKFILE_DIR}}/terraform"
+
+tasks:
+  default:
+    desc: List tasks
+    cmds:
+      - task --list
+    silent: true
+
+  # ----------------------------------------------------------------- Cluster (Terraform + Talos)
+  tf:fmt:
+    desc: Format Terraform
+    dir: "{{.TF_DIR}}"
+    cmds: [terraform fmt -recursive]
+
+  tf:validate:
+    desc: Validate Terraform
+    dir: "{{.TF_DIR}}"
+    cmds:
+      - terraform init -input=false -upgrade
+      - terraform validate
+
+  infra:plan:
+    desc: Plan the Proxmox VMs + Talos cluster (needs PROXMOX_VE_ENDPOINT/PROXMOX_VE_API_TOKEN)
+    dir: "{{.TF_DIR}}"
+    cmds:
+      - terraform init -input=false
+      - terraform plan
+
+  infra:up:
+    desc: Create the VMs + bootstrap Talos → writes infra/kubeconfig + infra/talosconfig
+    dir: "{{.TF_DIR}}"
+    cmds:
+      - terraform init -input=false
+      - terraform apply
+
+  infra:down:
+    desc: Destroy the cluster VMs
+    dir: "{{.TF_DIR}}"
+    cmds: [terraform destroy]
+
+  # ----------------------------------------------------------------- Add-ons + app (later steps)
+  cluster:addons:
+    desc: "(WIP) Install Cilium + cert-manager + ingress-nginx + KEDA via helmfile"
+    cmds:
+      - 'echo "TODO: helmfile -f bootstrap/helmfile.yaml apply"'
+
+  deploy:
+    desc: "(WIP) Deploy the ypd Helm chart (SOPS-decrypted secrets)"
+    cmds:
+      - 'echo "TODO: helmfile -f helm/helmfile.yaml apply"'
