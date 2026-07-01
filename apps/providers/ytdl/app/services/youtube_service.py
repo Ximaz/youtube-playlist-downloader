@@ -15,6 +15,9 @@ from yt_dlp.utils import DownloadError
 from yt_dlp.version import __version__ as YTDLP_VERSION
 
 from ..errors import ProviderError
+from ..logging_config import get_logger
+
+log = get_logger()
 
 # A request for /videos/:id is almost always followed by /videos/:id/stream from the same
 # backend worker. Caching the yt-dlp `_extract` result for ~10 min halves yt-dlp invocations
@@ -130,6 +133,23 @@ def _parse_retry_after(value: str | None) -> int:
 # fetching, so a video that newly requires one fails and the backend falls back to youtubejs.
 _POT_BASE_URL = (os.environ.get("POT_PROVIDER_BASE_URL") or "").rstrip("/")
 
+# Escalation cascade. googlevideo serves a token-FREE signed URL for only ONE request (a 2nd /
+# range request → 403), so the fast/free default is a SINGLE un-ranged GET (works for regular
+# videos, but can't be parallelized). When that GET is rejected up-front (403), escalate ONCE to a
+# PO-token client (`STREAM_TOKEN_PLAYER_CLIENTS`, default `ios`: raw directly-fetchable media, no
+# JS player) whose AUTHENTICATED URL allows parallel byte ranges — fast. Only videos that need it
+# spend a PO token. Off unless a POT sidecar (POT_PROVIDER_BASE_URL) is configured.
+_TOKEN_PLAYER_CLIENTS = tuple(
+    c.strip() for c in os.environ.get("STREAM_TOKEN_PLAYER_CLIENTS", "ios").split(",") if c.strip()
+)
+_ESCALATION_ENABLED = bool(_POT_BASE_URL) and bool(_TOKEN_PLAYER_CLIENTS)
+
+
+class _UpstreamForbidden(Exception):
+    """Internal: googlevideo rejected the media URL with 403 BEFORE any bytes were committed, so
+    `stream()` can escalate to a PO-token client (or surface a clean 502) instead of a truncated
+    body. Raised only from pre-flight checks; never leaves the module."""
+
 
 # Substrings in yt-dlp errors that mean "gone", not "broken".
 _NOT_FOUND_HINTS = (
@@ -182,19 +202,30 @@ class YoutubeService:
 
     # --- blocking extraction (run in a threadpool) -----------------------------------------
 
-    def _extract(self, url: str, extra_opts: dict[str, Any]) -> Info:
+    def _extract(
+        self, url: str, extra_opts: dict[str, Any], player_clients: tuple[str, ...] | None = None
+    ) -> Info:
         opts = {"quiet": True, "no_warnings": True, "skip_download": True, **extra_opts}
+        extractor_args: dict[str, Any] = dict(opts.get("extractor_args") or {})
+        if player_clients:
+            # Escalation: force a token-bearing client set. Its GVS PO-token policy requires a
+            # token, so yt-dlp fetches one (via bgutil below) and the media URL is attested.
+            youtube_args = dict(extractor_args.get("youtube") or {})
+            youtube_args["player_client"] = list(player_clients)
+            extractor_args["youtube"] = youtube_args
         if _POT_BASE_URL:
             # Point the bgutil HTTP POT plugin at the sidecar. yt-dlp's default fetch_pot is
             # "if_required", so a token is fetched only when a client/format actually needs one.
-            extractor_args = dict(opts.get("extractor_args") or {})
             extractor_args.setdefault("youtubepot-bgutilhttp", {"base_url": [_POT_BASE_URL]})
+        if extractor_args:
             opts["extractor_args"] = extractor_args
         with YoutubeDL(opts) as ydl:
             return ydl.sanitize_info(ydl.extract_info(url, download=False))  # type: ignore[no-any-return]
 
-    async def _extract_cached(self, url: str, extra_opts: dict[str, Any]) -> Info:
-        key = (url, frozenset(extra_opts.items()))
+    async def _extract_cached(
+        self, url: str, extra_opts: dict[str, Any], player_clients: tuple[str, ...] | None = None
+    ) -> Info:
+        key = (url, frozenset(extra_opts.items()), player_clients)
         cached = self._extract_cache.get(key)
         if cached is not None:
             return cached  # type: ignore[no-any-return]
@@ -209,7 +240,7 @@ class YoutubeService:
             )
         self._extract_inflight += 1
         try:
-            info = await run_in_threadpool(self._extract, url, extra_opts)
+            info = await run_in_threadpool(self._extract, url, extra_opts, player_clients)
         finally:
             self._extract_inflight -= 1
         self._extract_cache.set(key, info)
@@ -261,17 +292,54 @@ class YoutubeService:
     async def stream(
         self, video_id: str, kind: str, itag: str | None, range_header: str | None
     ) -> StreamingResponse:
+        watch = _watch_url(video_id)
+        # A client Range is a single proxied range (one request) — serve token-free as-is.
+        if range_header:
+            fmt = await self._select_format(watch, kind, itag, None)
+            try:
+                return await self._proxy(fmt, kind, range_header)
+            except _UpstreamForbidden as exc:
+                raise ProviderError(502, "UPSTREAM_ERROR", "upstream rejected range (403)") from exc
+
+        # Full download — fast/free path: a single un-ranged GET (the only thing googlevideo serves
+        # on a token-free URL). Works for regular videos; can't be parallelized.
+        fmt = await self._select_format(watch, kind, itag, None)
         try:
-            info = await self._extract_cached(_watch_url(video_id), {"noplaylist": True})
+            return await self._proxy(fmt, kind, None)
+        except _UpstreamForbidden as forbidden:
+            if not _ESCALATION_ENABLED:
+                raise ProviderError(
+                    502, "UPSTREAM_ERROR", "upstream rejected media URL (403)"
+                ) from forbidden
+
+        # The token-free GET was rejected (403). Escalate ONCE to a PO-token client whose
+        # authenticated URL allows fast parallel byte ranges. A second failure → clean 502 so the
+        # backend cascades to youtubejs.
+        log.info(
+            "stream_escalation",
+            video_id=video_id,
+            kind=kind,
+            player_clients=list(_TOKEN_PLAYER_CLIENTS),
+        )
+        fmt = await self._select_format(watch, kind, itag, _TOKEN_PLAYER_CLIENTS)
+        try:
+            return await self._stream_full(fmt, kind)
+        except _UpstreamForbidden as forbidden:
+            raise ProviderError(
+                502, "UPSTREAM_ERROR", "upstream rejected media URL (403) after PO-token escalation"
+            ) from forbidden
+
+    async def _select_format(
+        self, watch: str, kind: str, itag: str | None, player_clients: tuple[str, ...] | None
+    ) -> Format:
+        try:
+            info = await self._extract_cached(watch, {"noplaylist": True}, player_clients)
         except DownloadError as exc:
             raise self._classify(exc, "VIDEO_NOT_FOUND") from exc
         fmt = self._select(info.get("formats") or [], kind, itag)
         if fmt is None:
             raise ProviderError(404, "FORMAT_NOT_FOUND", f"no {kind} format available")
-        # A client Range is served as-is; a full download is parallelized across byte ranges.
-        if range_header:
-            return await self._proxy(fmt, kind, range_header)
-        return await self._stream_full(fmt, kind)
+        return fmt
 
     # --- format selection ------------------------------------------------------------------
 
@@ -333,6 +401,9 @@ class YoutubeService:
             await upstream.aclose()
             if status == 429:
                 raise ProviderError(429, "RATE_LIMITED", "upstream rate-limited (429)", retry_after)
+            # Pre-flight (headers not sent yet): a 403 on the token-free URL → escalate.
+            if status == 403:
+                raise _UpstreamForbidden("upstream returned 403")
             raise ProviderError(502, "UPSTREAM_ERROR", f"upstream returned {status}")
 
         container, ext = self._container_ext(fmt.get("ext"), kind)
@@ -365,21 +436,20 @@ class YoutubeService:
     # --- parallel ranged download ----------------------------------------------------------
 
     async def _stream_full(self, fmt: Format, kind: str) -> StreamingResponse:
-        """Full download: parallelize across byte ranges to defeat YouTube's throttle.
+        """PO-token escalation path: parallelize across byte ranges to defeat YouTube's throttle.
 
-        We need the EXACT byte length for ranged segments — `filesize_approx` (yt-dlp's
-        bitrate*duration estimate) is unsafe: over-estimate causes Range requests past EOF
-        (502s); under-estimate truncates with a wrong Content-Length (corrupts S3 PUTs). When
-        yt-dlp doesn't report the exact `filesize`, we PROBE it with a 1-byte ranged request
-        (Content-Range carries the true total) rather than falling back to a single un-ranged
-        GET — that bare GET is exactly what YouTube throttles to a stall ('terminated')."""
+        Only reached after the token-free single GET was 403'd, on an authenticated (PO-token) URL
+        that DOES allow multiple/range requests. We need the EXACT byte length for ranged segments
+        — `filesize_approx` (yt-dlp's bitrate*duration estimate) is unsafe: over-estimate causes
+        Range requests past EOF (502s); under-estimate truncates with a wrong Content-Length
+        (corrupts S3 PUTs). When yt-dlp doesn't report the exact `filesize`, PROBE it with a 1-byte
+        ranged request (Content-Range carries the true total)."""
         total = fmt.get("filesize")
         if not total:
             total = await self._probe_total(fmt)
-        if total and int(total) > _MIN_PARALLEL_SIZE and _SEGMENT_CONCURRENCY > 1:
-            return self._parallel_response(fmt, kind, int(total))
-        # Small file (burst completes before the throttle ramps) or size genuinely unknown
-        # (server didn't return Content-Range): a single stream is acceptable / unavoidable.
+        if total and int(total) > _MIN_PARALLEL_SIZE:
+            return await self._parallel_response(fmt, kind, int(total))
+        # Size unknown, or small enough that one request suffices: a single stream is fine.
         return await self._proxy(fmt, kind, None)
 
     async def _probe_total(self, fmt: Format) -> int | None:
@@ -389,6 +459,9 @@ class YoutubeService:
         try:
             client = _shared_http_client()
             async with client.stream("GET", fmt["url"], headers=headers) as resp:
+                # A 403 here (pre-flight) is the token URL being rejected — escalation exhausted.
+                if resp.status_code == 403:
+                    raise _UpstreamForbidden("probe returned 403")
                 cr = resp.headers.get("content-range")
                 if cr and "/" in cr:
                     tail = cr.rsplit("/", 1)[-1].strip()
@@ -398,9 +471,64 @@ class YoutubeService:
             return None
         return None
 
-    def _parallel_response(self, fmt: Format, kind: str, total: int) -> StreamingResponse:
+    async def _fetch_segment(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        base_headers: dict[str, str],
+        ranges: list[tuple[int, int]],
+        i: int,
+    ) -> bytes:
+        start, end = ranges[i]
+        headers = {**base_headers, "Range": f"bytes={start}-{end}"}
+        # Retry a throttled/reset/timed-out segment a few times before failing the whole stream —
+        # a single transient blip shouldn't surface to the backend as 'terminated'. Retryable:
+        # transport errors (timeout/RST) + 408/429/5xx. A 403 means the token URL was rejected →
+        # surface for escalation-exhausted handling (pre-flight) or to abort (later segments).
+        for attempt in range(_SEGMENT_RETRIES + 1):
+            try:
+                async with client.stream("GET", url, headers=headers) as resp:
+                    if resp.status_code >= 400:
+                        code = resp.status_code
+                        if code == 403:
+                            raise _UpstreamForbidden(f"segment {i} -> 403")
+                        retryable = code in (408, 429) or code >= 500
+                        if retryable and attempt < _SEGMENT_RETRIES:
+                            await asyncio.sleep(_SEGMENT_RETRY_BACKOFF * (2**attempt))
+                            continue
+                        if code == 429:
+                            raise ProviderError(
+                                429,
+                                "RATE_LIMITED",
+                                f"segment {i} rate-limited (429)",
+                                _parse_retry_after(resp.headers.get("retry-after")),
+                            )
+                        raise ProviderError(
+                            502, "UPSTREAM_ERROR", f"segment {i} -> {resp.status_code}"
+                        )
+                    return await resp.aread()
+            except httpx.TransportError as exc:  # timeout / RST / protocol error
+                if attempt < _SEGMENT_RETRIES:
+                    await asyncio.sleep(_SEGMENT_RETRY_BACKOFF * (2**attempt))
+                    continue
+                raise ProviderError(
+                    502, "UPSTREAM_ERROR", f"segment {i} failed after retries: {exc}"
+                ) from exc
+        # Unreachable: the loop either returns the bytes or raises on the last attempt.
+        raise ProviderError(502, "UPSTREAM_ERROR", f"segment {i} exhausted retries")
+
+    async def _parallel_response(self, fmt: Format, kind: str, total: int) -> StreamingResponse:
         url = fmt["url"]
         base_headers = dict(fmt.get("http_headers") or {})
+        ranges = [
+            (start, min(start + _SEGMENT_SIZE, total) - 1)
+            for start in range(0, total, _SEGMENT_SIZE)
+        ]
+        client = _shared_http_client()
+        # Pre-flight segment 0 BEFORE committing 200 + Content-Length: a 403 (token rejected) then
+        # surfaces as a clean status instead of a truncated body. Bytes are reused as chunk 0.
+        first_chunk = await self._fetch_segment(client, url, base_headers, ranges, 0)
+
         container, ext = self._container_ext(fmt.get("ext"), kind)
         out_headers = {
             "Accept-Ranges": "bytes",
@@ -411,63 +539,25 @@ class YoutubeService:
             "X-Format-Ext": ext,
         }
         media_type = _CONTENT_TYPE.get((container, kind), "application/octet-stream")
-        ranges = [
-            (start, min(start + _SEGMENT_SIZE, total) - 1)
-            for start in range(0, total, _SEGMENT_SIZE)
-        ]
 
         async def body() -> Any:
-            client = _shared_http_client()
             tasks: dict[int, asyncio.Task[bytes]] = {}
-
-            async def fetch(i: int) -> bytes:
-                start, end = ranges[i]
-                headers = {**base_headers, "Range": f"bytes={start}-{end}"}
-                # Retry a throttled/reset/timed-out segment a few times before failing the whole
-                # stream — a single transient blip shouldn't surface to the backend as 'terminated'.
-                # Retryable: transport errors (timeout/RST) + 408/429/5xx. A real 4xx is permanent.
-                for attempt in range(_SEGMENT_RETRIES + 1):
-                    try:
-                        # client.stream() is cancel-aware: task.cancel() aborts the upstream socket
-                        # immediately. client.get() reads to completion regardless of caller state.
-                        async with client.stream("GET", url, headers=headers) as resp:
-                            if resp.status_code >= 400:
-                                code = resp.status_code
-                                retryable = code in (408, 429) or code >= 500
-                                if retryable and attempt < _SEGMENT_RETRIES:
-                                    await asyncio.sleep(_SEGMENT_RETRY_BACKOFF * (2**attempt))
-                                    continue
-                                if code == 429:
-                                    raise ProviderError(
-                                        429,
-                                        "RATE_LIMITED",
-                                        f"segment {i} rate-limited (429)",
-                                        _parse_retry_after(resp.headers.get("retry-after")),
-                                    )
-                                raise ProviderError(
-                                    502, "UPSTREAM_ERROR", f"segment {i} -> {resp.status_code}"
-                                )
-                            return await resp.aread()
-                    except httpx.TransportError as exc:  # timeout / RST / protocol error
-                        if attempt < _SEGMENT_RETRIES:
-                            await asyncio.sleep(_SEGMENT_RETRY_BACKOFF * (2**attempt))
-                            continue
-                        raise ProviderError(
-                            502, "UPSTREAM_ERROR", f"segment {i} failed after retries: {exc}"
-                        ) from exc
-                # Unreachable: the loop either returns the bytes or raises on the last attempt.
-                raise ProviderError(502, "UPSTREAM_ERROR", f"segment {i} exhausted retries")
-
             # Keep at most _SEGMENT_CONCURRENCY fetches in flight, but yield strictly in order.
+            # Segment 0 is already in hand; schedule + yield the remainder from index 1.
             try:
+                yield first_chunk
                 n = len(ranges)
-                for i in range(min(_SEGMENT_CONCURRENCY, n)):
-                    tasks[i] = asyncio.create_task(fetch(i))
-                for nxt in range(n):
+                for i in range(1, min(_SEGMENT_CONCURRENCY + 1, n)):
+                    tasks[i] = asyncio.create_task(
+                        self._fetch_segment(client, url, base_headers, ranges, i)
+                    )
+                for nxt in range(1, n):
                     chunk = await tasks.pop(nxt)
                     scheduled = nxt + _SEGMENT_CONCURRENCY
                     if scheduled < n:
-                        tasks[scheduled] = asyncio.create_task(fetch(scheduled))
+                        tasks[scheduled] = asyncio.create_task(
+                            self._fetch_segment(client, url, base_headers, ranges, scheduled)
+                        )
                     yield chunk
             finally:
                 for task in tasks.values():

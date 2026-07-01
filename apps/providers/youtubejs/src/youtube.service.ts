@@ -101,9 +101,19 @@ interface StreamResult {
 }
 
 /** Why one stream-client attempt failed — lets stream() aggregate the most-informative error and
- *  decide whether to escalate to a PO-token client (on `botcheck`). */
-type StreamFailure = 'sessionexpired' | 'botcheck' | 'noformat' | 'notplayable' | 'error';
+ *  decide whether to escalate to a PO-token client (on `botcheck` or a download `forbidden`). */
+type StreamFailure =
+  | 'sessionexpired'
+  | 'botcheck'
+  | 'forbidden'
+  | 'noformat'
+  | 'notplayable'
+  | 'error';
 type StreamAttempt = { ok: StreamResult } | { failure: StreamFailure; error?: unknown };
+
+/** Internal signal: googlevideo rejected the token-free media URL with 403 BEFORE any bytes, so
+ *  stream() can escalate to a PO-token client instead of failing. Never leaves the module. */
+class UpstreamForbidden extends Error {}
 
 const CONTENT_TYPE: Record<string, string> = {
   'webm/audio': 'audio/webm',
@@ -333,6 +343,7 @@ export class YoutubeService {
     let sawNetworkError: ProviderError | undefined;
     let sawSessionExpired = false;
     let sawBotCheck = false;
+    let sawForbidden = false;
     let lastError: unknown;
 
     const record = (outcome: Exclude<StreamAttempt, { ok: StreamResult }>): void => {
@@ -343,6 +354,9 @@ export class YoutubeService {
           break;
         case 'botcheck':
           sawBotCheck = true;
+          break;
+        case 'forbidden':
+          sawForbidden = true;
           break;
         case 'noformat':
           sawNoFormat = true;
@@ -356,14 +370,25 @@ export class YoutubeService {
       }
     };
 
+    // Default clients are token-free → a full download is a SINGLE un-ranged GET (googlevideo
+    // serves only one request per token-free URL). `tokenized` stays false here.
     for (const client of STREAM_CLIENTS) {
-      const outcome = await this.#attemptStreamClient(yt, videoId, kind, itag, rangeHeader, client);
+      const outcome = await this.#attemptStreamClient(
+        yt,
+        videoId,
+        kind,
+        itag,
+        rangeHeader,
+        client,
+        false,
+      );
       if ('ok' in outcome) return outcome.ok;
       record(outcome);
     }
 
-    // Every default client hit a bot-check → escalate this video to a PO-token WEB client.
-    if (sawBotCheck) {
+    // A bot-check at extraction OR a 403 on the token-free download → escalate this video to a
+    // PO-token WEB client, whose authenticated URL allows fast parallel byte ranges.
+    if (sawBotCheck || sawForbidden) {
       try {
         const tokenizedYt = await this.#tokenizedInnertube();
         const outcome = await this.#attemptStreamClient(
@@ -373,6 +398,7 @@ export class YoutubeService {
           itag,
           rangeHeader,
           'WEB' as Types.InnerTubeClient,
+          true,
         );
         if ('ok' in outcome) return outcome.ok;
         record(outcome);
@@ -395,6 +421,11 @@ export class YoutubeService {
       throw new ProviderError(404, 'VIDEO_NOT_FOUND', 'video not playable across stream clients');
     }
     if (sawNetworkError) throw sawNetworkError;
+    if (sawForbidden) {
+      // Rejected token-free AND (if attempted) token path 403'd → clean 502 so the backend
+      // cascade moves on instead of retrying an unrecoverable URL.
+      throw new ProviderError(502, 'UPSTREAM_ERROR', 'upstream rejected media URL (403)');
+    }
     throw this.#classify(lastError, 'VIDEO_NOT_FOUND');
   }
 
@@ -408,6 +439,7 @@ export class YoutubeService {
     itag: string | undefined,
     rangeHeader: string | undefined,
     client: Types.InnerTubeClient,
+    tokenized: boolean,
   ): Promise<StreamAttempt> {
     let info: Awaited<ReturnType<Innertube['getBasicInfo']>>;
     try {
@@ -451,31 +483,52 @@ export class YoutubeService {
     };
 
     try {
-      // A client Range is served as-is; a full download is parallelized across byte ranges.
+      // A client Range is a single ranged request — serve as-is.
       if (range) {
         const body = await info.download({ ...options, range });
         headers['Content-Range'] = `bytes ${range.start}-${range.end}/${total || '*'}`;
         headers['Content-Length'] = String(range.end - range.start + 1);
         return { ok: { status: 206, headers, body } };
       }
-      if (total > MIN_PARALLEL_SIZE && SEGMENT_CONCURRENCY > 1) {
-        // Resolve the deciphered googlevideo URL ONCE, then fetch byte ranges directly (like
-        // provider-ytdl). youtubei.js's info.download() can't be called concurrently on one
-        // `info` — that stalled the old parallel path after the first segment.
-        const url = await format.decipher(yt.session.player);
-        if (url) {
-          const body = this.#parallelDownload(url, total);
-          headers['Content-Length'] = String(total);
-          return { ok: { status: 200, headers, body } };
-        }
-        // No URL (no player / cipher issue) → fall through to a single full download.
+      const url = await format.decipher(yt.session.player);
+      // TOKENIZED (authenticated) client: its URL allows multiple/range requests → fetch byte
+      // ranges directly (fast). youtubei.js's info.download() can't run concurrently on one `info`.
+      if (tokenized && url && total > MIN_PARALLEL_SIZE && SEGMENT_CONCURRENCY > 1) {
+        const body = this.#parallelDownload(url, total);
+        headers['Content-Length'] = String(total);
+        return { ok: { status: 200, headers, body } };
       }
+      // TOKEN-FREE (default) client: a SINGLE un-ranged GET — googlevideo serves only one request
+      // per token-free URL (a 2nd/range request → 403). A 403 here → escalate to the token client.
+      if (url) {
+        const body = await this.#singleDownload(url);
+        if (total) headers['Content-Length'] = String(total);
+        return { ok: { status: 200, headers, body } };
+      }
+      // No deciphered URL (player/cipher issue) → youtubei.js's own downloader as a last resort.
       const body = await info.download(options);
       if (total) headers['Content-Length'] = String(total);
       return { ok: { status: 200, headers, body } };
     } catch (err) {
+      if (err instanceof UpstreamForbidden) return { failure: 'forbidden', error: err };
       return { failure: 'error', error: err };
     }
+  }
+
+  /** Token-free full download: a SINGLE un-ranged GET of the deciphered URL (one request — all
+   *  googlevideo serves on a token-free URL). A 403 signals escalation to a PO-token client;
+   *  status is checked before returning the body so it never truncates a committed response. */
+  async #singleDownload(url: string): Promise<ReadableStream<Uint8Array>> {
+    const res = await fetch(url);
+    if (res.status === 403) {
+      await res.body?.cancel().catch(() => undefined);
+      throw new UpstreamForbidden('single GET -> 403');
+    }
+    if (!res.ok || !res.body) {
+      await res.body?.cancel().catch(() => undefined);
+      throw new ProviderError(502, 'UPSTREAM_ERROR', `single GET -> ${res.status}`);
+    }
+    return res.body;
   }
 
   // Chooses a streamable format from a single-client basic_info, preferring opus audio.

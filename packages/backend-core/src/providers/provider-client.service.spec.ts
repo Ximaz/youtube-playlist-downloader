@@ -136,3 +136,77 @@ describe('ProviderClientService — JSON fallback', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('ProviderClientService — openStream fallback (download balancing)', () => {
+  const fetchMock = vi.fn();
+  beforeEach(() => {
+    fetchMock.mockReset();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const streamOk = (): Response =>
+    new Response('audio-bytes', {
+      status: 200,
+      headers: {
+        'content-type': 'audio/webm',
+        'content-length': '11',
+        'x-format-itag': '251',
+        'x-format-container': 'webm',
+        'x-format-ext': 'weba',
+      },
+    });
+  const upstream502 = (): Response =>
+    new Response(JSON.stringify({ error: { code: 'UPSTREAM_ERROR', message: 'boom' } }), {
+      status: 502,
+    });
+
+  const twoProviders = (): ReturnType<typeof makeService> =>
+    makeService([
+      { name: 'ytdl', baseUrl: 'http://a' },
+      { name: 'youtubejs', baseUrl: 'http://b' },
+    ]);
+
+  // The whole point of the ytdl pre-flight cascade: a failing ytdl returns a clean 502 (before
+  // committing 200), so the loop reaches youtubejs. A truncated 200 would strand it on ytdl.
+  it('falls through to youtubejs when ytdl returns a clean 502', async () => {
+    fetchMock.mockResolvedValueOnce(upstream502()); // ytdl
+    fetchMock.mockResolvedValueOnce(streamOk()); // youtubejs
+    const { service } = twoProviders();
+    const res = await service.openStream('dQw4w9WgXcQ', 'audio');
+    expect(res.provider).toBe('youtubejs');
+    expect(res.itag).toBe('251');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    res.stream.destroy();
+  });
+
+  it('returns ytdl and never calls youtubejs when ytdl succeeds (2xx)', async () => {
+    fetchMock.mockResolvedValueOnce(streamOk());
+    const { service } = twoProviders();
+    const res = await service.openStream('dQw4w9WgXcQ', 'audio');
+    expect(res.provider).toBe('ytdl');
+    expect(fetchMock).toHaveBeenCalledOnce();
+    res.stream.destroy();
+  });
+
+  it('falls through when ytdl fetch throws (transport error)', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('ECONNRESET')); // ytdl
+    fetchMock.mockResolvedValueOnce(streamOk()); // youtubejs
+    const { service } = twoProviders();
+    const res = await service.openStream('dQw4w9WgXcQ', 'audio');
+    expect(res.provider).toBe('youtubejs');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    res.stream.destroy();
+  });
+
+  it('throws ProvidersUnavailableError when both providers 502', async () => {
+    fetchMock.mockResolvedValueOnce(upstream502()).mockResolvedValueOnce(upstream502());
+    const { service } = twoProviders();
+    await expect(service.openStream('dQw4w9WgXcQ', 'audio')).rejects.toBeInstanceOf(
+      ProvidersUnavailableError,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
