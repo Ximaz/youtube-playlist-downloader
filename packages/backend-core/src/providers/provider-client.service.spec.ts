@@ -1,3 +1,5 @@
+import { Readable } from 'node:stream';
+
 import { NotFoundException } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -208,5 +210,44 @@ describe('ProviderClientService — openStream fallback (download balancing)', (
       ProvidersUnavailableError,
     );
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // Regression: the inactivity watchdog used to reset its timer from a `'data'` listener, which
+  // put the source into flowing mode as soon as openStream returned. The caller does an S3
+  // `exists()` round trip before piping, and every chunk that landed in that window was dropped —
+  // the upload then finalised a SHORT object with no error anywhere (ffmpeg later failed with
+  // "moov atom not found"). The stream must still hold every byte for a late consumer.
+  it('loses no bytes when the consumer attaches after an await', async () => {
+    const payload = 'audio-bytes';
+    fetchMock.mockResolvedValueOnce(streamOk());
+    const { service } = twoProviders();
+    const res = await service.openStream('dQw4w9WgXcQ', 'audio');
+
+    // Stand in for `storage.exists()`: real async work between openStream and the pipe.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const chunks: Buffer[] = [];
+    for await (const chunk of res.stream) chunks.push(chunk as Buffer);
+    expect(Buffer.concat(chunks).toString()).toBe(payload);
+  });
+
+  it('propagates a source error to the consumer instead of ending cleanly', async () => {
+    const source = new Readable({ read() {} });
+    fetchMock.mockResolvedValueOnce(
+      new Response(Readable.toWeb(source) as ReadableStream<Uint8Array>, {
+        status: 200,
+        headers: { 'content-type': 'audio/webm', 'x-format-ext': 'weba' },
+      }),
+    );
+    const { service } = twoProviders();
+    const res = await service.openStream('dQw4w9WgXcQ', 'audio');
+    source.push('partial');
+    source.destroy(new Error('upstream died'));
+
+    await expect(
+      (async () => {
+        for await (const chunk of res.stream) void chunk; // drain
+      })(),
+    ).rejects.toThrow();
   });
 });

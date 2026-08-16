@@ -32,6 +32,10 @@ def configure_logging(level: str = "INFO") -> None:
         return
     logging.basicConfig(format="%(message)s", level=getattr(logging, level.upper(), logging.INFO))
     logging.getLogger("uvicorn.access").addFilter(_SkipHealthAccessFilter())
+    # httpx logs every request line at INFO — one per byte range, so a single 70 MB download
+    # emits ~70 of them, and each line contains the FULL signed googlevideo URL (its `sig` and
+    # any `pot` are credentials). Keep its warnings, drop the per-request spam.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,

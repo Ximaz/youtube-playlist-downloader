@@ -1,4 +1,4 @@
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import {
@@ -389,20 +389,37 @@ function zodIssueSummary(error: z.ZodError): string {
     .join('; ');
 }
 
-/** Destroys the stream with a clear error if no bytes flow for `idleMs`. The data path is
- *  unchanged — this just installs a watchdog timer that resets on every chunk. */
+/** Destroys the stream with a clear error if no bytes flow for `idleMs`.
+ *
+ *  The timer is reset from a pass-through in the pipe chain rather than from a `'data'` listener
+ *  on the source. Attaching `'data'` would switch the source into flowing mode the instant this
+ *  returns, and every chunk arriving before the CALLER attaches its own pipe would be emitted to
+ *  the watchdog and dropped — the caller does an S3 `exists()` round trip first, which is easily
+ *  long enough to lose a megabyte. The upload then finalises a short object with no error at all,
+ *  which is far worse than failing: ffmpeg later rejects it as "moov atom not found". The
+ *  pass-through also preserves backpressure, so it never buffers ahead of the consumer. */
 function withInactivityTimeout(source: Readable, idleMs: number): Readable {
   let timer: NodeJS.Timeout = setTimeout(timeoutFired, idleMs);
   function timeoutFired(): void {
     source.destroy(new Error(`stream inactivity > ${idleMs}ms`));
   }
-  function reset(): void {
+  const guard = new PassThrough({
+    transform(chunk, _encoding, callback) {
+      clearTimeout(timer);
+      timer = setTimeout(timeoutFired, idleMs);
+      callback(null, chunk);
+    },
+  });
+  // `pipe` forwards neither errors nor destruction, so wire both ways explicitly: the caller
+  // holds `guard` and destroys it to release the socket, and a source failure must surface.
+  source.once('error', (err: Error) => {
     clearTimeout(timer);
-    timer = setTimeout(timeoutFired, idleMs);
-  }
-  source.on('data', reset);
-  source.once('end', () => clearTimeout(timer));
-  source.once('close', () => clearTimeout(timer));
-  source.once('error', () => clearTimeout(timer));
-  return source;
+    guard.destroy(err);
+  });
+  guard.once('close', () => {
+    clearTimeout(timer);
+    if (!source.destroyed) source.destroy();
+  });
+  source.pipe(guard);
+  return guard;
 }

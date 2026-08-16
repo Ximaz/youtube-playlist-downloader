@@ -1,7 +1,7 @@
-import { Innertube, type Types } from 'youtubei.js';
+import { Constants, Innertube, type Types } from 'youtubei.js';
 
 import { ProviderError, type ProviderErrorCode } from './errors.js';
-import { poTokenMinter } from './potoken.js';
+import { logger } from './logger.js';
 import { saturation } from './saturation.js';
 
 type Kind = 'audio' | 'video';
@@ -15,17 +15,20 @@ interface ChooseOptions {
   client?: Types.InnerTubeClient;
 }
 
-// Streaming requires a client that returns pre-deciphered URLs without a PO token.
-// As of 2026 the WEB family no longer does; ANDROID_VR works and still offers opus.
-// Override with YOUTUBEJS_STREAM_CLIENTS (comma-separated, tried in order).
+// Streaming requires a client that returns pre-deciphered URLs. As of 2026-08 the WEB family is
+// SABR-only — it hands back no directly fetchable URL at all ("No valid URL to decipher"), with or
+// without a PO token — so ANDROID_VR is the one that works, and it needs no token. IOS is kept as
+// a second try. Override with YOUTUBEJS_STREAM_CLIENTS (comma-separated, tried in order).
 const STREAM_CLIENTS = (process.env.YOUTUBEJS_STREAM_CLIENTS ?? 'ANDROID_VR,IOS')
   .split(',')
   .map((c) => c.trim())
   .filter(Boolean) as Types.InnerTubeClient[];
 
-// Parallel ranged download: one getBasicInfo, then N concurrent range fetches to defeat
-// YouTube's per-connection throttle. Keep segments small (~1 MiB): the throttle ramps up
-// *within* a connection, so small ranges stay in the fast burst. Tunable via env; 1 disables.
+// Every download is fetched as EXPLICIT byte ranges, never as a plain un-ranged GET: googlevideo
+// now rejects an un-ranged GET on these signed URLs about half the time (403) while answering the
+// same URL's bounded ranges with 206. Ranges are also fetched N-at-a-time to defeat YouTube's
+// per-connection throttle. Keep segments small (~1 MiB): the throttle ramps up *within* a
+// connection, so small ranges stay in the fast burst. Tunable via env; 1 disables parallelism.
 const SEGMENT_SIZE = Math.max(1, Number(process.env.STREAM_SEGMENT_SIZE ?? 1024 * 1024));
 const SEGMENT_CONCURRENCY = Math.max(1, Number(process.env.STREAM_SEGMENT_CONCURRENCY ?? 4));
 const MIN_PARALLEL_SIZE = SEGMENT_SIZE * 2;
@@ -36,6 +39,12 @@ const SEGMENT_RETRY_BACKOFF_MS = Math.max(
   0,
   Number(process.env.STREAM_SEGMENT_RETRY_BACKOFF ?? 0.5) * 1000,
 );
+// A 403 is different from a transient fault: the signed URL itself was rejected (bot-check /
+// per-IP rate limit / expiry), so replaying it is pointless — the video is fine, the URL is not.
+// Re-resolve a fresh URL for the same itag and replay the range against that. The budget counts
+// refreshes SINCE THE LAST RANGE THAT SUCCEEDED, so a long file may need several over its
+// lifetime while a video whose every fresh URL is refused fails over quickly. Mirrors ytdl.
+const URL_REFRESHES = Math.max(0, Number(process.env.STREAM_URL_REFRESHES ?? 3));
 
 /** Structural subset of youtubei.js `Format` — avoids fragile deep type imports. */
 interface YtFormat {
@@ -100,20 +109,73 @@ interface StreamResult {
   body: ReadableStream<Uint8Array>;
 }
 
-/** Why one stream-client attempt failed — lets stream() aggregate the most-informative error and
- *  decide whether to escalate to a PO-token client (on `botcheck` or a download `forbidden`). */
+/** Why one stream-client attempt failed — lets stream() try the next client and finally aggregate
+ *  the most-informative error rather than reporting whichever one happened to come last. */
 type StreamFailure =
-  | 'sessionexpired'
-  | 'botcheck'
-  | 'forbidden'
-  | 'noformat'
-  | 'notplayable'
-  | 'error';
+  'sessionexpired' | 'botcheck' | 'forbidden' | 'noformat' | 'notplayable' | 'error';
 type StreamAttempt = { ok: StreamResult } | { failure: StreamFailure; error?: unknown };
 
-/** Internal signal: googlevideo rejected the token-free media URL with 403 BEFORE any bytes, so
- *  stream() can escalate to a PO-token client instead of failing. Never leaves the module. */
+/** Internal signal: googlevideo rejected the media URL with 403 and re-resolving a fresh URL did
+ *  not help, BEFORE any bytes were committed — so stream() can fall through to the next client and
+ *  surface a clean status instead of a truncated body. Never leaves the module. */
 class UpstreamForbidden extends Error {}
+
+/** The signed googlevideo URL for one (video, kind, itag), re-resolvable in place.
+ *
+ *  googlevideo can 403 a signed URL at any moment — bot-check, per-IP rate limit, expiry — and it
+ *  does so mid-download, not just up front. The URL is stale, the video is not: re-resolving
+ *  yields a fresh URL for the same itag that resumes at the very byte range that failed. Range
+ *  fetches read `url` through this object so one refresh repairs the whole in-flight download;
+ *  concurrent fetches that hit 403 on the same generation coalesce onto a single re-resolve. */
+class MediaSource {
+  readonly #resolve: () => Promise<string>;
+  readonly #label: string;
+  #inflight: Promise<boolean> | null = null;
+  #sinceProgress = 0;
+  /** Monotonic; identifies which URL a caller was using so refreshes coalesce. */
+  generation = 0;
+  url: string;
+
+  constructor(url: string, label: string, resolve: () => Promise<string>) {
+    this.url = url;
+    this.#label = label;
+    this.#resolve = resolve;
+  }
+
+  /** A range came back with bytes, so the current URL works — clear the refresh budget. */
+  progress(): void {
+    this.#sinceProgress = 0;
+  }
+
+  /** `seenGeneration` is the generation the caller was using: if it is already behind, someone
+   *  else refreshed and the caller just retries. Returns false once the budget is spent or the
+   *  re-resolve itself fails — the caller then gives up on this URL. */
+  async refresh(seenGeneration: number): Promise<boolean> {
+    if (seenGeneration !== this.generation) return true;
+    if (this.#inflight) return this.#inflight;
+    if (this.#sinceProgress >= URL_REFRESHES) return false;
+    const inflight = (async (): Promise<boolean> => {
+      try {
+        this.url = await this.#resolve();
+        this.generation++;
+        this.#sinceProgress++;
+        logger.info({ source: this.#label, generation: this.generation }, 'stream_url_refresh');
+        return true;
+      } catch (err) {
+        logger.warn(
+          { source: this.#label, err: err instanceof Error ? err.message : String(err) },
+          'stream_url_refresh_failed',
+        );
+        return false;
+      }
+    })();
+    this.#inflight = inflight;
+    void inflight.finally(() => {
+      if (this.#inflight === inflight) this.#inflight = null;
+    });
+    return inflight;
+  }
+}
 
 const CONTENT_TYPE: Record<string, string> = {
   'webm/audio': 'audio/webm',
@@ -137,9 +199,10 @@ const NOT_FOUND_HINTS = [
   'this video is not available',
 ];
 
-// Substrings / playability statuses that mean YouTube is demanding a PO-token / "prove you're
-// not a bot". The DEFAULT ANDROID_VR/IOS clients don't need a token today, so on these we
-// escalate per-video to a WEB client bound to a freshly-minted PO token (see potoken.ts).
+// Substrings / playability statuses that mean YouTube is demanding a PO-token / "prove you're not
+// a bot". There is nothing to escalate to — the clients that accept a PO token are SABR-only and
+// serve no fetchable URL — so this is a classification signal: it means "this egress IP is being
+// challenged" (429 RATE_LIMITED, backend backs off) rather than "this video is gone" (404).
 const BOT_CHECK_HINTS = [
   'sign in to confirm',
   "confirm you're not a bot",
@@ -176,15 +239,10 @@ const INFO_MAX_ENTRIES = 512;
 const PLAYABLE_STATUSES = new Set(['OK', 'LIVE_STREAM_OFFLINE']);
 
 export class YoutubeService {
-  static readonly libraryVersion = '17.0.1';
+  static readonly libraryVersion = '18.0.0';
 
   #instance: Innertube | null = null;
   #creating: Promise<Innertube> | null = null;
-  // PO-token escalation: a WEB-client Innertube bound to a minted token, built lazily on the
-  // first bot-check and reused across videos until it fails (then rebuilt). Separate from the
-  // default instance so the cheap no-token path stays the norm.
-  #tokenized: Innertube | null = null;
-  #tokenizedCreating: Promise<Innertube> | null = null;
   // Caches yt.getInfo(videoId) by videoId for INFO_TTL_MS; trimmed to INFO_MAX_ENTRIES LRU.
   #infoCache = new Map<string, { ts: number; info: Awaited<ReturnType<Innertube['getInfo']>> }>();
 
@@ -209,33 +267,6 @@ export class YoutubeService {
     this.#instance = null;
     this.#creating = null;
     this.#infoCache.clear();
-  }
-
-  /** Lazily build (and cache) a WEB-client Innertube bound to a minted PO token. Throws if a
-   *  token can't be obtained (minter in cooldown / BotGuard failure) — the caller then gives up
-   *  on that video and the backend falls back to the other provider. */
-  async #tokenizedInnertube(): Promise<Innertube> {
-    if (this.#tokenized) return this.#tokenized;
-    if (!this.#tokenizedCreating) {
-      const creating = (async () => {
-        const base = await this.#innertube();
-        const visitorData = base.session.context?.client?.visitorData;
-        if (!visitorData) throw new Error('no visitor data available to bind a PO token');
-        const { poToken } = await poTokenMinter.mint(visitorData);
-        return Innertube.create({ po_token: poToken, visitor_data: visitorData });
-      })();
-      this.#tokenizedCreating = creating;
-      creating.catch(() => {
-        if (this.#tokenizedCreating === creating) this.#tokenizedCreating = null;
-      });
-    }
-    this.#tokenized = await this.#tokenizedCreating;
-    return this.#tokenized;
-  }
-
-  #resetTokenized(): void {
-    this.#tokenized = null;
-    this.#tokenizedCreating = null;
   }
 
   #isBotCheck(err: unknown): boolean {
@@ -370,43 +401,10 @@ export class YoutubeService {
       }
     };
 
-    // Default clients are token-free → a full download is a SINGLE un-ranged GET (googlevideo
-    // serves only one request per token-free URL). `tokenized` stays false here.
     for (const client of STREAM_CLIENTS) {
-      const outcome = await this.#attemptStreamClient(
-        yt,
-        videoId,
-        kind,
-        itag,
-        rangeHeader,
-        client,
-        false,
-      );
+      const outcome = await this.#attemptStreamClient(yt, videoId, kind, itag, rangeHeader, client);
       if ('ok' in outcome) return outcome.ok;
       record(outcome);
-    }
-
-    // A bot-check at extraction OR a 403 on the token-free download → escalate this video to a
-    // PO-token WEB client, whose authenticated URL allows fast parallel byte ranges.
-    if (sawBotCheck || sawForbidden) {
-      try {
-        const tokenizedYt = await this.#tokenizedInnertube();
-        const outcome = await this.#attemptStreamClient(
-          tokenizedYt,
-          videoId,
-          kind,
-          itag,
-          rangeHeader,
-          'WEB' as Types.InnerTubeClient,
-          true,
-        );
-        if ('ok' in outcome) return outcome.ok;
-        record(outcome);
-      } catch (err) {
-        // Minting unavailable (cooldown / BotGuard failure) — give up; backend falls back.
-        this.#resetTokenized();
-        lastError = err;
-      }
     }
 
     // Drop any cached Innertube if every client failed for session-expired reasons.
@@ -421,8 +419,14 @@ export class YoutubeService {
       throw new ProviderError(404, 'VIDEO_NOT_FOUND', 'video not playable across stream clients');
     }
     if (sawNetworkError) throw sawNetworkError;
+    if (sawBotCheck) {
+      // YouTube is challenging this egress IP rather than hiding the video. Surface it as a
+      // retryable rate-limit so the backend backs off and fails over instead of marking the
+      // video permanently unavailable.
+      throw new ProviderError(429, 'RATE_LIMITED', 'upstream demanded a bot check', 5);
+    }
     if (sawForbidden) {
-      // Rejected token-free AND (if attempted) token path 403'd → clean 502 so the backend
+      // Every client's URL was refused even after re-resolving → clean 502 so the backend
       // cascade moves on instead of retrying an unrecoverable URL.
       throw new ProviderError(502, 'UPSTREAM_ERROR', 'upstream rejected media URL (403)');
     }
@@ -430,8 +434,7 @@ export class YoutubeService {
   }
 
   /** One stream attempt against a single client. Returns the StreamResult on success or a
-   *  categorized failure (so stream() can aggregate + decide on PO-token escalation). The
-   *  download logic is identical for the default clients and the tokenized WEB retry. */
+   *  categorized failure, so stream() can try the next client and aggregate the best error. */
   async #attemptStreamClient(
     yt: Innertube,
     videoId: string,
@@ -439,7 +442,6 @@ export class YoutubeService {
     itag: string | undefined,
     rangeHeader: string | undefined,
     client: Types.InnerTubeClient,
-    tokenized: boolean,
   ): Promise<StreamAttempt> {
     let info: Awaited<ReturnType<Innertube['getBasicInfo']>>;
     try {
@@ -483,30 +485,39 @@ export class YoutubeService {
     };
 
     try {
-      // A client Range is a single ranged request — serve as-is.
+      const url = await format.decipher(yt.session.player);
+      if (!url) {
+        // No deciphered URL (SABR-only client, or a player/cipher issue) → youtubei.js's own
+        // downloader as a last resort. It cannot do our refresh-on-403 dance.
+        const body = await info.download(range ? { ...options, range } : options);
+        if (range) {
+          headers['Content-Range'] = `bytes ${range.start}-${range.end}/${total || '*'}`;
+          headers['Content-Length'] = String(range.end - range.start + 1);
+          return { ok: { status: 206, headers, body } };
+        }
+        if (total) headers['Content-Length'] = String(total);
+        return { ok: { status: 200, headers, body } };
+      }
+
+      const source = this.#mediaSource(url, videoId, kind, format.itag, total, client);
+      // A client Range is a single ranged request — serve it as a 206 covering just that span.
       if (range) {
-        const body = await info.download({ ...options, range });
+        const body = await this.#fetchRange(source, range.start, range.end, 'range');
         headers['Content-Range'] = `bytes ${range.start}-${range.end}/${total || '*'}`;
         headers['Content-Length'] = String(range.end - range.start + 1);
         return { ok: { status: 206, headers, body } };
       }
-      const url = await format.decipher(yt.session.player);
-      // TOKENIZED (authenticated) client: its URL allows multiple/range requests → fetch byte
-      // ranges directly (fast). youtubei.js's info.download() can't run concurrently on one `info`.
-      if (tokenized && url && total > MIN_PARALLEL_SIZE && SEGMENT_CONCURRENCY > 1) {
-        const body = this.#parallelDownload(url, total);
+      // Full download. Big enough to be worth splitting → concurrent ranges; otherwise one
+      // range spanning the whole file. Either way it is RANGED: an un-ranged GET gets 403'd.
+      if (total > MIN_PARALLEL_SIZE && SEGMENT_CONCURRENCY > 1) {
+        // Pre-flight segment 0 before committing 200 + Content-Length, so an unrecoverable 403
+        // surfaces as a clean status (and lets stream() try the next client) instead of a
+        // truncated body. Its bytes are reused as the first chunk.
+        const body = await this.#parallelDownload(source, total);
         headers['Content-Length'] = String(total);
         return { ok: { status: 200, headers, body } };
       }
-      // TOKEN-FREE (default) client: a SINGLE un-ranged GET — googlevideo serves only one request
-      // per token-free URL (a 2nd/range request → 403). A 403 here → escalate to the token client.
-      if (url) {
-        const body = await this.#singleDownload(url);
-        if (total) headers['Content-Length'] = String(total);
-        return { ok: { status: 200, headers, body } };
-      }
-      // No deciphered URL (player/cipher issue) → youtubei.js's own downloader as a last resort.
-      const body = await info.download(options);
+      const body = await this.#fetchRange(source, 0, total ? total - 1 : undefined, 'download');
       if (total) headers['Content-Length'] = String(total);
       return { ok: { status: 200, headers, body } };
     } catch (err) {
@@ -515,20 +526,139 @@ export class YoutubeService {
     }
   }
 
-  /** Token-free full download: a SINGLE un-ranged GET of the deciphered URL (one request — all
-   *  googlevideo serves on a token-free URL). A 403 signals escalation to a PO-token client;
-   *  status is checked before returning the body so it never truncates a committed response. */
-  async #singleDownload(url: string): Promise<ReadableStream<Uint8Array>> {
-    const res = await fetch(url);
-    if (res.status === 403) {
+  /** Wrap a deciphered URL so a 403 can re-resolve it: re-fetch basic info on the same client,
+   *  re-pick the SAME itag and decipher again. The size must match — a response may already have
+   *  committed Content-Length, so a fresh URL is only usable if it addresses the same bytes. */
+  #mediaSource(
+    url: string,
+    videoId: string,
+    kind: Kind,
+    itag: number,
+    total: number,
+    client: Types.InnerTubeClient,
+  ): MediaSource {
+    return new MediaSource(url, `${videoId}/${kind}`, async () => {
+      const yt = await this.#innertube();
+      const info = await yt.getBasicInfo(videoId, { client });
+      const chosen = this.#chooseForStream(info, kind, String(itag), client);
+      if (!chosen) throw new Error(`itag ${itag} vanished on re-resolve`);
+      if (total && (chosen.format.content_length ?? 0) !== total) {
+        throw new Error(`itag ${itag} changed size on re-resolve`);
+      }
+      const fresh = await chosen.format.decipher(yt.session.player);
+      if (!fresh) throw new Error(`itag ${itag} has no URL on re-resolve`);
+      return fresh;
+    });
+  }
+
+  /** One ranged GET, healing the two ways googlevideo fails a healthy download: transient faults
+   *  (timeout/RST/408/429/5xx) are replayed against the same URL after a backoff, while a 403
+   *  means the URL itself was rejected, so the source re-resolves and the range is replayed
+   *  against a fresh URL. `end` omitted = open-ended (`bytes=N-`), used when the size is unknown.
+   *  The status and length are checked before the body is handed back, so it never truncates a
+   *  response whose Content-Length is already committed. The body is returned UNREAD — only call
+   *  this when the caller consumes it immediately (see #readRange for the fetch-ahead case). */
+  async #fetchRange(
+    source: MediaSource,
+    start: number,
+    end: number | undefined,
+    label: string,
+    signal?: AbortSignal,
+  ): Promise<ReadableStream<Uint8Array>> {
+    const range = `bytes=${start}-${end ?? ''}`;
+    for (let transient = 0; ;) {
+      const generation = source.generation;
+      let res: Response;
+      try {
+        // Send the same headers youtubei.js's own downloader uses (origin/referer/accept):
+        // googlevideo is markedly more willing to 403 a request that doesn't look like it came
+        // from the client that minted the URL. Only the Range is ours.
+        res = await fetch(source.url, {
+          headers: { ...Constants.STREAM_HEADERS, Range: range },
+          ...(signal ? { signal } : {}),
+        });
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        if (transient < SEGMENT_RETRIES) {
+          await delay(SEGMENT_RETRY_BACKOFF_MS * 2 ** transient++);
+          continue;
+        }
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new ProviderError(502, 'UPSTREAM_ERROR', `${label} failed after retries: ${msg}`);
+      }
+      if (res.ok || res.status === 206) {
+        // We commit Content-Length up front, so a range that comes back the wrong length would
+        // silently corrupt the stored object. Treat it as a transient fault and replay.
+        const want = end === undefined ? null : end - start + 1;
+        const got = Number(res.headers.get('content-length') ?? NaN);
+        if (!res.body || (want !== null && got !== want)) {
+          await res.body?.cancel().catch(() => undefined);
+          if (transient < SEGMENT_RETRIES) {
+            await delay(SEGMENT_RETRY_BACKOFF_MS * 2 ** transient++);
+            continue;
+          }
+          throw new ProviderError(
+            502,
+            'UPSTREAM_ERROR',
+            `${label} -> ${res.status} with ${got || 0} bytes, expected ${want}`,
+          );
+        }
+        source.progress();
+        return res.body;
+      }
       await res.body?.cancel().catch(() => undefined);
-      throw new UpstreamForbidden('single GET -> 403');
+      if (res.status === 403) {
+        if (await source.refresh(generation)) continue;
+        throw new UpstreamForbidden(`${label} -> 403`);
+      }
+      if ((res.status === 408 || res.status === 429 || res.status >= 500) && !signal?.aborted) {
+        if (transient < SEGMENT_RETRIES) {
+          await delay(SEGMENT_RETRY_BACKOFF_MS * 2 ** transient++);
+          continue;
+        }
+      }
+      if (res.status === 429) {
+        throw new ProviderError(429, 'RATE_LIMITED', `${label} rate-limited (429)`, 5);
+      }
+      throw new ProviderError(502, 'UPSTREAM_ERROR', `${label} -> ${res.status}`);
     }
-    if (!res.ok || !res.body) {
-      await res.body?.cancel().catch(() => undefined);
-      throw new ProviderError(502, 'UPSTREAM_ERROR', `single GET -> ${res.status}`);
+  }
+
+  /** Ranged GET whose body is drained into memory before returning.
+   *
+   *  The parallel path fetches segments SEGMENT_CONCURRENCY ahead of the consumer, and googlevideo
+   *  drops a response body that is left unread for a few seconds — the body then ends cleanly at
+   *  zero bytes, silently punching a segment-sized hole in a response whose Content-Length is
+   *  already committed. So a segment must be drained the moment it lands, not lazily when its turn
+   *  comes. Memory stays bounded at SEGMENT_CONCURRENCY × SEGMENT_SIZE (mirrors provider-ytdl). */
+  async #readRange(
+    source: MediaSource,
+    start: number,
+    end: number,
+    label: string,
+    signal: AbortSignal,
+  ): Promise<Uint8Array> {
+    const want = end - start + 1;
+    for (let attempt = 0; ; attempt++) {
+      const body = await this.#fetchRange(source, start, end, label, signal);
+      let bytes: Uint8Array;
+      try {
+        bytes = new Uint8Array(await new Response(body).arrayBuffer());
+      } catch (err) {
+        if (signal.aborted || attempt >= SEGMENT_RETRIES) throw err;
+        await delay(SEGMENT_RETRY_BACKOFF_MS * 2 ** attempt);
+        continue;
+      }
+      if (bytes.byteLength === want) return bytes;
+      if (attempt >= SEGMENT_RETRIES) {
+        throw new ProviderError(
+          502,
+          'UPSTREAM_ERROR',
+          `${label} delivered ${bytes.byteLength} of ${want} bytes`,
+        );
+      }
+      await delay(SEGMENT_RETRY_BACKOFF_MS * 2 ** attempt);
     }
-    return res.body;
   }
 
   // Chooses a streamable format from a single-client basic_info, preferring opus audio.
@@ -558,10 +688,11 @@ export class YoutubeService {
 
   // Full download split into ordered byte ranges fetched DIRECTLY from the deciphered googlevideo
   // URL — independent requests (like provider-ytdl), NOT youtubei.js's info.download() which can't
-  // run concurrently on one `info` (that stalled after the first segment). Memory stays ~one
-  // segment: each pending entry is the in-flight fetch; bodies are streamed in order, never
-  // buffered ahead. Raw fetch + AbortController also makes client-disconnect cancellation real.
-  #parallelDownload(url: string, total: number): ReadableStream<Uint8Array> {
+  // run concurrently on one `info` (that stalled after the first segment). At most
+  // SEGMENT_CONCURRENCY segments are in flight and each is buffered whole (see #readRange), so
+  // memory is bounded at SEGMENT_CONCURRENCY × SEGMENT_SIZE and chunks are emitted strictly in
+  // order. Raw fetch + AbortController also makes client-disconnect cancellation real.
+  async #parallelDownload(source: MediaSource, total: number): Promise<ReadableStream<Uint8Array>> {
     const ranges: Array<{ start: number; end: number }> = [];
     for (let start = 0; start < total; start += SEGMENT_SIZE) {
       ranges.push({ start, end: Math.min(start + SEGMENT_SIZE, total) - 1 });
@@ -569,114 +700,79 @@ export class YoutubeService {
     let cancelled = false;
     const inflight = new Set<AbortController>();
 
-    const fetchSeg = async (r: { start: number; end: number }, i: number): Promise<Response> => {
-      for (let attempt = 0; ; attempt++) {
-        const ac = new AbortController();
-        inflight.add(ac);
-        try {
-          const res = await fetch(url, {
-            headers: { Range: `bytes=${r.start}-${r.end}` },
-            signal: ac.signal,
-          });
-          if (res.status === 206 || res.ok) return res;
-          await res.body?.cancel().catch(() => undefined);
-          const retryable = res.status === 408 || res.status === 429 || res.status >= 500;
-          if (retryable && attempt < SEGMENT_RETRIES && !cancelled) {
-            await delay(SEGMENT_RETRY_BACKOFF_MS * 2 ** attempt);
-            continue;
-          }
-          throw new ProviderError(502, 'UPSTREAM_ERROR', `segment ${i} -> ${res.status}`);
-        } catch (err) {
-          if (cancelled || err instanceof ProviderError) throw err;
-          if (attempt < SEGMENT_RETRIES) {
-            await delay(SEGMENT_RETRY_BACKOFF_MS * 2 ** attempt);
-            continue;
-          }
-          const msg = err instanceof Error ? err.message : String(err);
-          throw new ProviderError(
-            502,
-            'UPSTREAM_ERROR',
-            `segment ${i} failed after retries: ${msg}`,
-          );
-        }
-      }
+    const fetchSeg = (r: { start: number; end: number }, i: number): Promise<Uint8Array> => {
+      const ac = new AbortController();
+      inflight.add(ac);
+      return this.#readRange(source, r.start, r.end, `segment ${i}`, ac.signal).finally(() => {
+        inflight.delete(ac);
+      });
     };
 
-    const pending = new Map<number, Promise<Response>>();
+    // Pre-flight the FIRST and LAST ranges OUTSIDE the stream: an unrecoverable 403 must reach the
+    // caller before the 200 + Content-Length are committed, or the backend just sees a truncated
+    // body it cannot distinguish from a complete one.
+    //
+    // The last range is what makes this sound. youtubei.js sessions are regularly handed a URL
+    // that serves an opening WINDOW and then 403s every offset past it — the window has been
+    // observed at 1, 4, 7 and 18 MiB for different videos, while yt-dlp's URL for the very same
+    // video, IP and minute serves the whole file (a client-fingerprint difference, not rate
+    // limiting). Segment 0 alone proves nothing and no fixed count does either; only the far end
+    // does. Both ranges are needed anyway, so the cost is one segment held in memory until the
+    // end, and a would-be truncated download becomes a clean failure that falls through to the
+    // next client and then to provider-ytdl. The caller only takes this path when
+    // total > MIN_PARALLEL_SIZE, so the two indices are always distinct.
+    const lastIdx = ranges.length - 1;
+    const [firstBytes, lastBytes] = await Promise.all([
+      fetchSeg(ranges[0] as { start: number; end: number }, 0),
+      fetchSeg(ranges[lastIdx] as { start: number; end: number }, lastIdx),
+    ]);
+
+    const pending = new Map<number, Promise<Uint8Array>>([
+      [0, Promise.resolve(firstBytes)],
+      [lastIdx, Promise.resolve(lastBytes)],
+    ]);
     const schedule = (i: number): void => {
       const r = ranges[i];
-      if (!r) return;
+      // `pending.has` keeps the read-ahead from re-fetching the pre-flighted last segment.
+      if (!r || pending.has(i)) return;
       const p = fetchSeg(r, i);
       // Swallow rejection on this side-chain so a segment cancelled before it's read doesn't
       // surface as an unhandled rejection; pull() still observes errors when it awaits `p`.
       p.catch(() => undefined);
       pending.set(i, p);
     };
-    for (let i = 0; i < Math.min(SEGMENT_CONCURRENCY, ranges.length); i++) schedule(i);
+    for (let i = 1; i < Math.min(SEGMENT_CONCURRENCY, ranges.length); i++) schedule(i);
     let nextIdx = 0;
-    let currentReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
     return new ReadableStream<Uint8Array>({
       async pull(controller) {
-        if (cancelled) {
+        if (cancelled || nextIdx >= ranges.length) {
           controller.close();
           return;
         }
-        // Loop until we ENQUEUE a chunk (or close/error). Returning from pull() without enqueueing
-        // does NOT reliably re-invoke it, so advancing across an exhausted segment must happen
-        // inside one pull() call — otherwise the stream stalls after the first segment.
-        for (;;) {
-          if (!currentReader) {
-            if (nextIdx >= ranges.length) {
-              controller.close();
-              return;
-            }
-            const cur = nextIdx++;
-            const promise = pending.get(cur);
-            if (!promise) {
-              controller.close();
-              return;
-            }
-            pending.delete(cur);
-            // Keep the pool warm: schedule the segment CONCURRENCY ahead, without buffering bytes.
-            if (!cancelled) schedule(cur + SEGMENT_CONCURRENCY);
-            try {
-              const res = await promise;
-              if (!res.body) {
-                controller.close();
-                return;
-              }
-              currentReader = res.body.getReader();
-            } catch (err) {
-              controller.error(err);
-              return;
-            }
-          }
-          try {
-            const { value, done } = await currentReader.read();
-            if (done) {
-              currentReader = null;
-              continue; // segment exhausted → advance to the next one in this same pull()
-            }
-            if (value && !cancelled) {
-              controller.enqueue(value);
-              return;
-            }
-          } catch (err) {
-            controller.error(err);
-            return;
-          }
+        const cur = nextIdx++;
+        const promise = pending.get(cur);
+        if (!promise) {
+          // Unreachable: every index < ranges.length is scheduled before it is pulled. Erroring
+          // (not closing) keeps a logic slip from silently shipping a short body.
+          controller.error(
+            new ProviderError(502, 'UPSTREAM_ERROR', `segment ${cur} not scheduled`),
+          );
+          return;
+        }
+        pending.delete(cur);
+        // Keep the pool warm: schedule the segment CONCURRENCY ahead of the consumer.
+        if (!cancelled) schedule(cur + SEGMENT_CONCURRENCY);
+        try {
+          const bytes = await promise;
+          if (!cancelled) controller.enqueue(bytes);
+        } catch (err) {
+          controller.error(err);
         }
       },
-      async cancel(): Promise<void> {
-        // Client disconnect: abort the active reader + every in-flight/pending segment fetch.
+      cancel(): void {
+        // Client disconnect: abort every in-flight/pending segment fetch.
         cancelled = true;
-        try {
-          await currentReader?.cancel();
-        } catch {
-          // ignore
-        }
-        currentReader = null;
         for (const ac of inflight) ac.abort();
         inflight.clear();
         pending.clear();
@@ -705,22 +801,21 @@ export class YoutubeService {
         this.#resetInstance();
         throw new ProviderError(502, 'UPSTREAM_ERROR', (err as Error).message ?? 'session expired');
       }
-      // Bot-check on the default client → escalate this video to a PO-token WEB client.
-      if (this.#isBotCheck(err)) info = await this.#getInfoTokenized(videoId);
-      else throw this.#classify(err, 'VIDEO_NOT_FOUND');
+      // A bot-check means YouTube is challenging this egress IP, not that the video is gone —
+      // report it as a retryable rate-limit so the backend backs off and fails over rather than
+      // recording the video as permanently unavailable.
+      if (this.#isBotCheck(err)) {
+        throw new ProviderError(429, 'RATE_LIMITED', (err as Error).message ?? 'bot check', 5);
+      }
+      throw this.#classify(err, 'VIDEO_NOT_FOUND');
     }
-    let status = info.playability_status?.status;
+    const status = info.playability_status?.status;
     if (status && !PLAYABLE_STATUSES.has(status)) {
-      // A LOGIN_REQUIRED / "not a bot" status is the other way a bot-check surfaces — retry once
-      // with the PO-token client before declaring the video unavailable.
+      const reason = info.playability_status?.reason || `video not playable: ${status}`;
       if (this.#isBotCheckStatus(info)) {
-        info = await this.#getInfoTokenized(videoId);
-        status = info.playability_status?.status;
+        throw new ProviderError(429, 'RATE_LIMITED', reason, 5);
       }
-      if (status && !PLAYABLE_STATUSES.has(status)) {
-        const reason = info.playability_status?.reason || `video not playable: ${status}`;
-        throw new ProviderError(404, 'VIDEO_NOT_FOUND', reason);
-      }
+      throw new ProviderError(404, 'VIDEO_NOT_FOUND', reason);
     }
     if (this.#infoCache.size >= INFO_MAX_ENTRIES) {
       const oldest = this.#infoCache.keys().next().value;
@@ -728,28 +823,6 @@ export class YoutubeService {
     }
     this.#infoCache.set(videoId, { ts: Date.now(), info });
     return info;
-  }
-
-  /** Re-fetch getInfo on the PO-token WEB client after a bot-check. A failure to obtain a token
-   *  surfaces as UPSTREAM_ERROR (retryable; backend falls back); a failure of the tokenized call
-   *  itself drops the cached tokenized instance so the next escalation rebuilds it. */
-  async #getInfoTokenized(videoId: string): Promise<Awaited<ReturnType<Innertube['getInfo']>>> {
-    let yt: Innertube;
-    try {
-      yt = await this.#tokenizedInnertube();
-    } catch (err) {
-      throw new ProviderError(
-        502,
-        'UPSTREAM_ERROR',
-        `PO-token escalation unavailable: ${(err as Error).message}`,
-      );
-    }
-    try {
-      return await yt.getInfo(videoId);
-    } catch (err) {
-      this.#resetTokenized();
-      throw this.#classify(err, 'VIDEO_NOT_FOUND');
-    }
   }
 
   #isSessionExpired(err: unknown): boolean {
