@@ -18,8 +18,8 @@ const displayName = computed(() => props.name ?? 'Signed in');
 // First-letter initial as the avatar fallback when Google returns no picture.
 const initial = computed(() => (props.name?.trim()?.[0] ?? '·').toUpperCase());
 
-const menuItems = computed<DropdownMenuItem[][]>(() => [
-  [{ label: 'Disconnect', icon: 'i-lucide-log-out', onSelect: () => emit('sign-out') }],
+const menuItems = computed<DropdownMenuItem[]>(() => [
+  { label: 'Disconnect', icon: 'i-lucide-log-out', onSelect: () => emit('sign-out') },
 ]);
 </script>
 

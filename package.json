@@ -17,8 +17,8 @@
   },
   "devDependencies": {
     "husky": "9.1.7",
-    "lint-staged": "16.2.7",
-    "prettier": "3.8.3"
+    "lint-staged": "17.3.0",
+    "prettier": "3.9.6"
   },
   "lint-staged": {
     "apps/backend/src/**/*.ts": [
@@ -43,6 +43,22 @@
       "@scarf/scarf",
       "msgpackr-extract",
       "esbuild"
-    ]
+    ],
+    "//overrides": "Transitive advisories only — every DIRECT dependency is already on its latest release. Each entry is the lowest patched version per major line reported by `pnpm audit`; drop an entry once the parent package ships a fix itself.",
+    "overrides": {
+      "body-parser@^2": "2.3.0",
+      "brace-expansion@^1": "1.1.18",
+      "brace-expansion@^2": "2.1.4",
+      "brace-expansion@^5": "5.0.9",
+      "esbuild@^0.27": "0.28.2",
+      "esbuild@^0.28": "0.28.2",
+      "fast-uri@^3": "3.1.5",
+      "js-yaml@^4": "4.3.1",
+      "js-yaml@^5": "5.3.0",
+      "shell-quote@^1": "1.10.0",
+      "socket.io-parser@^4": "4.2.7",
+      "tar@^7": "7.5.22",
+      "ws@^8": "8.21.3"
+    }
   }
 }
