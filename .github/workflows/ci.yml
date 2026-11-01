@@ -39,7 +39,7 @@ jobs:
         working-directory: apps/providers/ytdl
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.3 # no floating major tag: its releases are immutable
         with:
           version: '0.13.6'
       - run: uv sync --frozen
