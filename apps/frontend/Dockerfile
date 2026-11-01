@@ -2,11 +2,11 @@
 # Build context = repo root (workspace member; needs packages/shared + root lockfile).
 
 FROM node:24-alpine AS base
-RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
+RUN corepack enable && corepack prepare pnpm@12.16.1 --activate
 WORKDIR /repo
 
 FROM base AS build
-COPY pnpm-lock.yaml pnpm-workspace.yaml package.json .npmrc ./
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/backend-core/package.json packages/backend-core/
 COPY apps/backend/package.json apps/backend/

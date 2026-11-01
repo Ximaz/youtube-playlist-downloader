@@ -109,8 +109,8 @@ S3 and served straight from it.
   SIGTERM. The yt-dlp `_extract` result is cached in-process for 10 min keyed by
   `(video_id, extra_opts)`, so the typical "`GET /videos/:id` then `GET /videos/:id/stream`"
   pair invokes yt-dlp once instead of twice.
-- **provider-youtubejs** streams via `info.download()` using the **`ANDROID_VR`** client, which (as
-  of 2026) returns pre-deciphered URLs without a PO token; the web clients no longer do. Override
+- **provider-youtubejs** streams via the **`VISIONOS`** client, which (as of 2026-11) returns
+  pre-deciphered URLs serving the whole file without a PO token; the other clients no longer do. Override
   with `YOUTUBEJS_STREAM_CLIENTS`. `getInfo` results are likewise cached for 10 min, and a
   detected session-expired error (signature mismatch / visitor data) drops the cached `Innertube`
   instance so the next call rebuilds it instead of bricking the provider until restart.

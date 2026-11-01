@@ -1,0 +1,7 @@
+# Standalone project (own lockfile, not a member of the root workspace). This file also makes it
+# its own pnpm root, so commands run here don't resolve against the repo's workspace.
+saveExact: true
+engineStrict: true
+
+allowBuilds:
+  esbuild: true

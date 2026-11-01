@@ -28,7 +28,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the full design and data 
 ## Prerequisites
 
 - Docker + Docker Compose (the only requirement for the full stack).
-- For local development outside Docker: Node 24 + `pnpm` 10, `uv` (Python 3.13), and `ffmpeg`.
+- For local development outside Docker: Node 24 + `pnpm` 12, `uv` (Python 3.13), and `ffmpeg`.
 
 ## Quick start
 
@@ -150,9 +150,9 @@ secrets/<service>/         per-service .env (+ .env.example); real .env is gitig
   [`docs/decisions/`](docs/decisions/)). `pg_dump` from a backup container will expose them; only
   trust hosts you control. App-level AEAD is an intentional non-goal — the threat model is
   "machine I control" + "anyone with shell on it has equal access to the keys anyway."
-- **PO tokens / bot checks:** YouTube may require a PO token for streaming. youtube.js streams
-  via the `ANDROID_VR` client (works without one today); both providers have env hooks to add a
-  PO-token provider if 403s appear. See [`docs/streaming-and-conversion.md`](docs/streaming-and-conversion.md).
+- **PO tokens / bot checks:** YouTube may require a PO token for streaming. Both providers stream
+  via the `visionos` client (works without one today) and have env hooks to add a PO-token
+  provider if 403s appear. See [`docs/streaming-and-conversion.md`](docs/streaming-and-conversion.md).
 - **MP4 conversion is CPU-heavy** (VP9/AV1 → H.264); it runs in concurrency-limited workers.
 - **`storage` is for local dev only** (SeaweedFS); production should point `S3_*` at a real provider.
 - **Prisma migrate runs at backend startup** by default. In prod, set `MIGRATE_ON_START=false`

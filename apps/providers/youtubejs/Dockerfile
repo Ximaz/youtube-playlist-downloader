@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1
 
 FROM node:24-alpine AS base
-RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
+RUN corepack enable && corepack prepare pnpm@12.16.1 --activate
 WORKDIR /app
 
 # ---- builder: full install + tsc build (standalone; no workspace in context) ----
 FROM base AS builder
-COPY package.json pnpm-lock.yaml .npmrc ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY tsconfig.json ./
 COPY src ./src
@@ -14,7 +14,7 @@ RUN pnpm build
 
 # ---- deps: production-only node_modules ----
 FROM base AS deps
-COPY package.json pnpm-lock.yaml .npmrc ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --prod
 
 # ---- runtime ----

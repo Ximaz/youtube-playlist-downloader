@@ -19,7 +19,7 @@ services:
   # no JSON config file. The backend's S3 client uses the same credentials (S3_ACCESS_KEY /
   # S3_SECRET_KEY in secrets/backend/.env). Named 'storage' to stay backend-agnostic.
   storage:
-    image: chrislusf/seaweedfs:4.29
+    image: chrislusf/seaweedfs:4.51
     restart: unless-stopped
     env_file:
       - ./secrets/storage/.env
@@ -148,7 +148,7 @@ services:
   # and the providers serve as today. In-process generation (jsdom/BotGuard) doesn't attest
   # reliably outside a real browser, which is why this runs as its own maintained service.
   provider-pot:
-    image: brainicism/bgutil-ytdlp-pot-provider:1.3.1
+    image: brainicism/bgutil-ytdlp-pot-provider:2.0.2
     restart: unless-stopped
     expose:
       - "4416"

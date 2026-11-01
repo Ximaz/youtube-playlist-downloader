@@ -6,7 +6,7 @@ import {
   Histogram,
   type Metric,
   Registry,
-} from 'prom-client';
+} from '@prometheus-io/client';
 
 /**
  * Single shared registry + the YPD-specific counters/histograms.

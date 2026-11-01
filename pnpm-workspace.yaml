@@ -9,3 +9,22 @@ packages:
   - "apps/frontend"
   - "packages/shared"
   - "packages/backend-core"
+
+# pnpm >=11 reads its settings from here only (not from .npmrc or package.json#pnpm).
+saveExact: true
+engineStrict: true
+
+allowBuilds:
+  "@prisma/engines": true
+  prisma: true
+  "@prisma/client": true
+  "@nestjs/core": true
+  "@scarf/scarf": true
+  msgpackr-extract: true
+  esbuild: true
+  "@parcel/watcher": false
+  vue-demi: false
+
+# Transitive advisories only: drop an entry once the parent ships the fix itself.
+overrides:
+  esbuild@^0.27: 0.28.2

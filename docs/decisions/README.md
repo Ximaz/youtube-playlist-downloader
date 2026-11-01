@@ -22,7 +22,7 @@ frontend ↔ backend progress only. **Trade-off:** none — HTTP streaming is st
 
 ## 0004 — Dev S3 is SeaweedFS (the `storage` service)
 The official MinIO community image was discontinued (Oct 2025, with a CVE) and Bitnami's free
-catalog is gone; both are unpullable. SeaweedFS is maintained, pinnable (`chrislusf/seaweedfs:4.29`),
+catalog is gone; both are unpullable. SeaweedFS is maintained, pinnable (`chrislusf/seaweedfs:4.51`),
 and gives a real S3 gateway (proper multipart/streaming, which the pipeline leans on). The Compose
 service is named `storage` (not `s3`) to mirror the backend's storage abstraction and stay
 provider-agnostic. The backend's S3 client is configured purely via `S3_*` env

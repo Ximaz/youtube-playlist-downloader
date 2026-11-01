@@ -18,7 +18,7 @@ images:
   providerYoutubejs: ypd-provider-youtubejs
   # provider-pot is an upstream image (full ref, not under global.registry).
   providerPotRepository: docker.io/brainicism/bgutil-ytdlp-pot-provider
-  providerPotTag: "1.3.1"
+  providerPotTag: "2.0.2"
 
 # ------------------------------------------------------------------ Secrets (vault-free)
 secrets:
@@ -50,7 +50,7 @@ postgres:
 
 seaweedfs:
   inCluster: true
-  image: chrislusf/seaweedfs:4.29
+  image: chrislusf/seaweedfs:4.51
   existingSecret: ypd-seaweedfs # keys: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY (== S3_ACCESS/SECRET)
   storage: 20Gi
   resources:

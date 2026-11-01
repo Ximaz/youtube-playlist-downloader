@@ -3,14 +3,14 @@
 # root lockfile).
 
 FROM node:24-alpine AS base
-RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
+RUN corepack enable && corepack prepare pnpm@12.16.1 --activate
 WORKDIR /repo
 
 FROM base AS build
 # Manifests + Prisma schema first, so postinstall (`prisma generate`) can run
 # during install and the resulting node_modules layer is fully cacheable —
 # invalidated only when the lockfile, package manifests, or the schema change.
-COPY pnpm-lock.yaml pnpm-workspace.yaml package.json .npmrc ./
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/backend-core/package.json packages/backend-core/
 COPY apps/backend/package.json apps/backend/

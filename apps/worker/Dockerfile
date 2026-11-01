@@ -4,7 +4,7 @@
 # Swagger, Socket.IO or REST surface (just /health, /ready, /metrics probes).
 
 FROM node:24-alpine AS base
-RUN corepack enable && corepack prepare pnpm@10.33.2 --activate
+RUN corepack enable && corepack prepare pnpm@12.16.1 --activate
 WORKDIR /repo
 
 FROM base AS build
@@ -12,7 +12,7 @@ FROM base AS build
 # workspace graph; `--filter @ypd/worker...` then installs ONLY the worker + its workspace deps
 # (shared, backend-core). Other packages' postinstalls (e.g. backend's prisma generate) are never
 # invoked because they're out of the install scope. BuildKit cache mount keeps the pnpm store warm.
-COPY pnpm-lock.yaml pnpm-workspace.yaml package.json .npmrc ./
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/backend-core/package.json packages/backend-core/
 COPY apps/worker/package.json apps/worker/

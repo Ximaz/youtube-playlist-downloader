@@ -15,11 +15,11 @@ interface ChooseOptions {
   client?: Types.InnerTubeClient;
 }
 
-// Streaming requires a client that returns pre-deciphered URLs. As of 2026-08 the WEB family is
-// SABR-only — it hands back no directly fetchable URL at all ("No valid URL to decipher"), with or
-// without a PO token — so ANDROID_VR is the one that works, and it needs no token. IOS is kept as
-// a second try. Override with YOUTUBEJS_STREAM_CLIENTS (comma-separated, tried in order).
-const STREAM_CLIENTS = (process.env.YOUTUBEJS_STREAM_CLIENTS ?? 'ANDROID_VR,IOS')
+// Streaming requires a client that returns pre-deciphered URLs serving the WHOLE file. As of 2026-11
+// VISIONOS is the only one: the WEB family is SABR-only ("No valid URL to decipher"), and IOS and
+// ANDROID_VR URLs 403 past an opening window. It needs no token. Override with
+// YOUTUBEJS_STREAM_CLIENTS (comma-separated, tried in order).
+const STREAM_CLIENTS = (process.env.YOUTUBEJS_STREAM_CLIENTS ?? 'VISIONOS')
   .split(',')
   .map((c) => c.trim())
   .filter(Boolean) as Types.InnerTubeClient[];
@@ -239,7 +239,7 @@ const INFO_MAX_ENTRIES = 512;
 const PLAYABLE_STATUSES = new Set(['OK', 'LIVE_STREAM_OFFLINE']);
 
 export class YoutubeService {
-  static readonly libraryVersion = '18.0.0';
+  static readonly libraryVersion = '18.3.0';
 
   #instance: Innertube | null = null;
   #creating: Promise<Innertube> | null = null;
@@ -323,12 +323,20 @@ export class YoutubeService {
     const title = page.info.title;
     const author = page.info.author?.name;
     const videos: { id: string; title?: string }[] = [];
-    // youtubei.js PlaylistVideo.title is a `Text` node (`.text`); capture it free for the UI.
+    // Items are `LockupView` (content_id + metadata.title) or, on older layouts, `PlaylistVideo`
+    // (id + title); both titles are `Text` nodes. Capture them free for the UI.
     const collect = (items: readonly unknown[]): void => {
       for (const item of items) {
-        const { id, title: itemTitle } = item as { id?: string; title?: { text?: string } };
-        if (!id) continue;
-        videos.push({ id, ...(itemTitle?.text ? { title: itemTitle.text } : {}) });
+        const { id, content_id, title, metadata } = item as {
+          id?: string;
+          content_id?: string;
+          title?: { text?: string };
+          metadata?: { title?: { text?: string } };
+        };
+        const videoId = id ?? content_id;
+        if (!videoId) continue;
+        const name = title?.text ?? metadata?.title?.text;
+        videos.push({ id: videoId, ...(name ? { title: name } : {}) });
       }
     };
 

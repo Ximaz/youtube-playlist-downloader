@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
-import { collectDefaultMetrics, Counter, Histogram, Registry } from 'prom-client';
+import { collectDefaultMetrics, Counter, Histogram, Registry } from '@prometheus-io/client';
 
 import { ProviderError } from './errors.js';
 import { logger } from './logger.js';
@@ -38,7 +38,7 @@ const app = new Hono();
 // Skip successful /health probes — they fire on the healthcheck interval and only add noise;
 // errors (status >= 400) are still logged so an unhealthy container is visible.
 // Also adopts/echoes x-ypd-request-id so backend logs can be correlated end-to-end, and feeds
-// the prom-client histograms below.
+// the Prometheus histograms below.
 app.use('*', async (c, next) => {
   const start = performance.now();
   const incoming = c.req.header(REQUEST_ID_HEADER);

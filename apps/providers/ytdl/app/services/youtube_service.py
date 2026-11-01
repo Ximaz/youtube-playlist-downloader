@@ -151,11 +151,12 @@ def _parse_retry_after(value: str | None) -> int:
 # automatic; dormant otherwise — does NOT change the working no-token path). Unset ⇒ no token
 # fetching, so a video that newly requires one fails and the backend falls back to youtubejs.
 #
-# We do NOT force a token-bearing player client. As of 2026-08 every client that requires a GVS
-# PO token (`web`, `web_safari`, `mweb`, `ios`, `tv_simply`) is SABR-only — it returns no directly
-# fetchable https URLs at all — and `tv` reports DRM. The one client that still serves plain URLs,
-# `android_vr` (yt-dlp's default), needs no token. So the plugin stays wired for the day that
-# changes, but the download path is plain-URL + byte ranges.
+# We do NOT force a player client: with no JS runtime in the image (keep it that way), yt-dlp's
+# default is its JS-less list, currently just `visionos` — which, as of 2026-11, needs no token and
+# serves whole files. Installing deno would switch the default to `tv_samsung,visionos,web`, and
+# `tv_samsung` URLs 403 on some videos. `android_vr` (403s everything since 2026-08-17) and `web`
+# (SABR-only) are dead. So the plugin stays wired for the day that changes, but the download path
+# is plain-URL + byte ranges.
 _POT_BASE_URL = (os.environ.get("POT_PROVIDER_BASE_URL") or "").rstrip("/")
 
 
@@ -234,6 +235,13 @@ _NOT_FOUND_HINTS = (
     "members-only",
     "this video is not available",
 )
+
+
+def _is_direct(fmt: Format) -> bool:
+    """A byte-addressable media URL. yt-dlp also lists HLS formats, often at the top of the quality
+    ladder, whose `url` is a text manifest: "downloading" one stores a few KiB of m3u8 with a 200
+    and a matching Content-Length, so nothing downstream notices until ffmpeg chokes on it."""
+    return bool(fmt.get("url")) and fmt.get("protocol") in ("https", "http")
 
 
 def _watch_url(video_id: str) -> str:
@@ -396,7 +404,7 @@ class YoutubeService:
     def _select(self, formats: list[Format], kind: str, itag: str | None) -> Format | None:
         if itag:
             for f in formats:
-                if str(f.get("format_id")) == str(itag) and f.get("url"):
+                if str(f.get("format_id")) == str(itag) and _is_direct(f):
                     return f
             return None
         return self._pick_audio(formats) if kind == "audio" else self._pick_video(formats)
@@ -407,15 +415,24 @@ class YoutubeService:
             for f in formats
             if f.get("acodec") not in (None, "none")
             and f.get("vcodec") in (None, "none")
-            and f.get("url")
+            and _is_direct(f)
         ]
         if not audios:
             return None
-        # Prefer opus/webm (the genuine best-quality audio, and our "WEBA original"); fall
-        # back to whatever is best otherwise. Keeps audio choice consistent across providers.
-        opus = [f for f in audios if (f.get("acodec") or "").lower().startswith("opus")]
-        pool = opus or audios
-        return max(pool, key=lambda f: f.get("abr") or f.get("tbr") or 0)
+        # A video can carry dubbed tracks and DRC variants of one itag (`251-10`, `251-drc`), and a
+        # dub can out-rank the original on bitrate alone. So rank: the original language first
+        # (language_preference), then opus/webm (the genuine best-quality audio, and our "WEBA
+        # original"; keeps the choice consistent across providers), then non-DRC (quality), then
+        # bitrate.
+        return max(
+            audios,
+            key=lambda f: (
+                f.get("language_preference") or -1,
+                (f.get("acodec") or "").lower().startswith("opus"),
+                f.get("quality") or 0,
+                f.get("abr") or f.get("tbr") or 0,
+            ),
+        )
 
     def _pick_video(self, formats: list[Format]) -> Format | None:
         video_only = [
@@ -423,10 +440,10 @@ class YoutubeService:
             for f in formats
             if f.get("vcodec") not in (None, "none")
             and f.get("acodec") in (None, "none")
-            and f.get("url")
+            and _is_direct(f)
         ]
         candidates = video_only or [
-            f for f in formats if f.get("vcodec") not in (None, "none") and f.get("url")
+            f for f in formats if f.get("vcodec") not in (None, "none") and _is_direct(f)
         ]
         if not candidates:
             return None

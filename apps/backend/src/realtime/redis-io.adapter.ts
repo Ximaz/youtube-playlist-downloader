@@ -1,5 +1,4 @@
 import type { INestApplicationContext } from '@nestjs/common';
-import { Logger } from '@nestjs/common';
 import { IoAdapter } from '@nestjs/platform-socket.io';
 import { createAdapter } from '@socket.io/redis-adapter';
 import Redis from 'iovalkey';
@@ -16,7 +15,6 @@ import { parseRedisUrl } from '@ypd/backend-core';
  * Requires the Valkey ACL to grant `+@pubsub` (PUBLISH/SUBSCRIBE) — see docker-compose.yml.
  */
 export class RedisIoAdapter extends IoAdapter {
-  private readonly logger = new Logger(RedisIoAdapter.name);
   private adapterConstructor?: ReturnType<typeof createAdapter>;
   private pub?: Redis;
   private sub?: Redis;
@@ -40,8 +38,8 @@ export class RedisIoAdapter extends IoAdapter {
     this.adapterConstructor = createAdapter(this.pub, this.sub);
   }
 
-  createIOServer(port: number, options?: ServerOptions): unknown {
-    const server = super.createIOServer(port, options) as Server;
+  createIOServer(port: number, options?: ServerOptions): Server {
+    const server = super.createIOServer(port, options);
     if (this.adapterConstructor) server.adapter(this.adapterConstructor);
     return server;
   }

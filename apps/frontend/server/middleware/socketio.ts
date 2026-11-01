@@ -28,7 +28,7 @@ export default defineEventHandler((event) => {
   // upgrade that somehow arrived before any HTTP request would fail to connect rather than degrade
   // — not a concern on the normal path.
   if (!upgradeBound) {
-    const server = (event.node.req.socket as { server?: Server }).server;
+    const server = event.node.req.socket.server as Server | null;
     if (server) {
       upgradeBound = true;
       server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
